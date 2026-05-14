@@ -46,6 +46,8 @@ Motif discovery uses only the first four nucleotide channels. The two optional a
 
 With six-channel sequence input, `modisco motifs --region` can restrict discovery to `all`, `5utr`, `cds`, or `3utr`. Region boundaries are inferred from phase-consistent CDS codon-start annotations and combined with the padding mask.
 
+For region-specific runs, transcripts without CDS codon-start annotations are skipped by default because 5' UTR/CDS/3' UTR boundaries cannot be inferred for non-coding or unannotated RNAs. Use `--missing-cds error` if every input is expected to be coding and you want strict validation.
+
 ## Running RNA-MoDISco
 
 You can run TF-MoDISco using the command line tool `modisco` which comes with the TF-MoDISco installation. This tool allows you to run TF-MoDISco on a set of sequences and corresponding attributions, and then to generate a report (like the one seen above) for the output generated from the first step.

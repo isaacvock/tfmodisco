@@ -131,6 +131,17 @@ def cli() -> None:
     show_default=True,
     help="RNA region to run on when sequence input has 6 channels.",
 )
+@click.option(
+    "--missing-cds",
+    type=click.Choice(["skip", "error"], case_sensitive=False),
+    default="skip",
+    show_default=True,
+    help=(
+        "Policy for examples without CDS codon-start annotations during "
+        "region-specific runs. 'skip' excludes non-coding/unannotated examples; "
+        "'error' fails strictly."
+    ),
+)
 @click.option("-v", "--verbose", is_flag=True)
 def motifs(
     seq_path: str,
@@ -146,6 +157,7 @@ def motifs(
     final_flank_to_add: int,
     output: str,
     region: str,
+    missing_cds: str,
     verbose: bool,
 ):
     """Run RNA-MoDISco and extract motifs."""
@@ -195,6 +207,7 @@ def motifs(
         target_seqlet_fdr=0.05,
         n_leiden_runs=n_leiden,
         region=region,
+        missing_cds=missing_cds,
         verbose=verbose,
     )
     modiscolite.io.save_hdf5(output, pos_patterns, neg_patterns,

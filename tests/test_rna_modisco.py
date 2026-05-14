@@ -127,6 +127,36 @@ def test_region_masks_for_5utr_cds_and_3utr():
     np.testing.assert_array_equal(np.flatnonzero(mask_3utr[0]), np.arange(15, 20))
 
 
+def test_region_masks_skip_missing_cds_examples_by_default():
+    sequence = np.concatenate(
+        [_annotated_sequence(), np.zeros((1, 24, 6), dtype="float32")],
+        axis=0,
+    )
+    sequence[1, :18, :4] = _one_hot("ACGU" * 5)[:18]
+    padding_mask = rna.infer_padding_mask(sequence)
+
+    with pytest.warns(UserWarning, match="lack CDS codon-start"):
+        mask_3utr, metadata = rna.infer_region_mask(
+            sequence, padding_mask, "3utr"
+        )
+
+    np.testing.assert_array_equal(np.flatnonzero(mask_3utr[0]), np.arange(15, 20))
+    assert not np.any(mask_3utr[1])
+    assert metadata[0]["cds_start"] == 6
+    assert metadata[1] is None
+
+
+def test_region_masks_can_error_on_missing_cds_examples():
+    sequence = np.zeros((1, 24, 6), dtype="float32")
+    sequence[0, :18, :4] = _one_hot("ACGU" * 5)[:18]
+    padding_mask = rna.infer_padding_mask(sequence)
+
+    with pytest.raises(ValueError, match="no CDS codon-start annotations"):
+        rna.infer_region_mask(
+            sequence, padding_mask, "3utr", missing_cds="error"
+        )
+
+
 def test_region_request_requires_six_channels():
     sequence = _one_hot("ACGUACGU", length=8).T[None]
     attributions = np.ones((1, 4, 8), dtype="float32")

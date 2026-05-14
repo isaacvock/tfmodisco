@@ -58,10 +58,12 @@ def _standardize_input_shapes(one_hot, hypothetical_contribs):
 	)
 
 
-def _prepare_inputs(one_hot, hypothetical_contribs, sequence_mask=None, region="all"):
+def _prepare_inputs(one_hot, hypothetical_contribs, sequence_mask=None,
+	region="all", missing_cds="skip"):
 	sequence_features, hypothetical_contribs = _standardize_input_shapes(
 		one_hot, hypothetical_contribs)
 	region = rna.normalize_region(region)
+	missing_cds = rna.normalize_missing_cds(missing_cds)
 
 	if not np.all(np.isfinite(sequence_features)):
 		raise ValueError("one_hot contains non-finite values.")
@@ -71,7 +73,8 @@ def _prepare_inputs(one_hot, hypothetical_contribs, sequence_mask=None, region="
 	padding_mask = rna.infer_padding_mask(
 		sequence=sequence_features, sequence_mask=sequence_mask)
 	region_mask, region_metadata = rna.infer_region_mask(
-		sequence=sequence_features, padding_mask=padding_mask, region=region)
+		sequence=sequence_features, padding_mask=padding_mask, region=region,
+		missing_cds=missing_cds)
 	position_mask = padding_mask & region_mask
 
 	if not np.any(position_mask):
@@ -349,12 +352,14 @@ def TFMoDISco(one_hot, hypothetical_contribs, sliding_window_size=21,
 	prob_and_pertrack_sim_dealbreaker_thresholds=[(0.4, 0.75), (0.2,0.8), (0.1, 0.85), (0.0,0.9)],
 	subcluster_perplexity=50, merging_max_seqlets_subsample=1000,
 	final_min_cluster_size=20, min_ic_in_window=0.6, min_ic_windowsize=6,
-	ppm_pseudocount=0.001, sequence_mask=None, region="all", verbose=False):
+	ppm_pseudocount=0.001, sequence_mask=None, region="all",
+	missing_cds="skip", verbose=False):
 
 	(one_hot, hypothetical_contribs, sequence_features, position_mask,
 		padding_mask, region, region_metadata) = _prepare_inputs(
 			one_hot=one_hot, hypothetical_contribs=hypothetical_contribs,
-			sequence_mask=sequence_mask, region=region)
+			sequence_mask=sequence_mask, region=region,
+			missing_cds=missing_cds)
 
 	contrib_scores = np.multiply(one_hot, hypothetical_contribs)
 

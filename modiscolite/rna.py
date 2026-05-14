@@ -7,6 +7,7 @@ import numpy as np
 
 
 VALID_REGIONS = ("all", "5utr", "cds", "3utr")
+VALID_MISSING_CDS = ("skip", "error")
 
 
 def normalize_region(region):
@@ -16,6 +17,16 @@ def normalize_region(region):
 			"region must be one of {}; got {!r}.".format(VALID_REGIONS, region)
 		)
 	return region
+
+
+def normalize_missing_cds(missing_cds):
+	missing_cds = str(missing_cds).lower()
+	if missing_cds not in VALID_MISSING_CDS:
+		raise ValueError(
+			"missing_cds must be one of {}; got {!r}."
+			.format(VALID_MISSING_CDS, missing_cds)
+		)
+	return missing_cds
 
 
 def _squeeze_mask(mask):
@@ -116,7 +127,7 @@ def infer_padding_mask(sequence, sequence_mask=None):
 	return padding_mask
 
 
-def infer_region_mask(sequence, padding_mask, region="all"):
+def infer_region_mask(sequence, padding_mask, region="all", missing_cds="skip"):
 	"""Infer an N x L region mask from RNA sequence channels.
 
 	For 6-channel inputs, channel 4 marks CDS codon starts and channel 5 marks
@@ -126,6 +137,7 @@ def infer_region_mask(sequence, padding_mask, region="all"):
 	"""
 
 	region = normalize_region(region)
+	missing_cds = normalize_missing_cds(missing_cds)
 	padding_mask = np.asarray(padding_mask).astype(bool)
 
 	if region == "all":
@@ -147,6 +159,7 @@ def infer_region_mask(sequence, padding_mask, region="all"):
 
 	region_mask = np.zeros_like(padding_mask, dtype=bool)
 	metadata = []
+	skipped_missing_cds = []
 
 	for example_idx in range(sequence.shape[0]):
 		valid_positions = np.flatnonzero(padding_mask[example_idx])
@@ -185,10 +198,15 @@ def infer_region_mask(sequence, padding_mask, region="all"):
 				.format(example_idx)
 			)
 		if len(codon_starts) == 0:
-			raise ValueError(
+			message = (
 				"example {} cannot infer {!r}: no CDS codon-start annotations."
 				.format(example_idx, region)
 			)
+			if missing_cds == "error":
+				raise ValueError(message)
+			skipped_missing_cds.append(example_idx)
+			metadata.append(None)
+			continue
 
 		cds_start = int(codon_starts[0])
 		last_codon_start = int(codon_starts[-1])
@@ -231,9 +249,22 @@ def infer_region_mask(sequence, padding_mask, region="all"):
 
 		metadata.append(bounds)
 
+	if len(skipped_missing_cds) > 0:
+		preview = ", ".join(str(x) for x in skipped_missing_cds[:5])
+		if len(skipped_missing_cds) > 5:
+			preview += ", ..."
+		warnings.warn(
+			"Skipping {} examples for region {!r} because they lack CDS "
+			"codon-start annotations; first skipped examples: {}. Use "
+			"missing_cds='error' for strict validation."
+			.format(len(skipped_missing_cds), region, preview)
+		)
+
 	if not np.any(region_mask):
 		raise ValueError(
-			"region {!r} produced no valid positions across all examples."
+			"region {!r} produced no valid positions across all examples. "
+			"Examples without CDS codon-start annotations are skipped by default "
+			"for region-specific analyses."
 			.format(region)
 		)
 
