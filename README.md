@@ -40,7 +40,7 @@ RNA-MoDISco accepts attribution tensors with four nucleotide channels and sequen
 
 - Attributions: `N x 4 x L` or internal `N x L x 4`.
 - Sequence, nucleotide only: `N x 4 x L` or internal `N x L x 4`, ordered `A/C/G/U`.
-- Sequence, annotated RNA: `N x 6 x L` or internal `N x L x 6`, where channels 0-3 are `A/C/G/U`, channel 4 is a CDS codon-start indicator, and channel 5 is a 5' splice-site indicator.
+- Sequence, annotated RNA: `N x 6 x L` or internal `N x L x 6`, where channels 0-3 are `A/C/G/U`, channel 4 is a CDS codon-start indicator, and channel 5 contains 5' splice-site indicators. Multiple 5' splice-site annotations per transcript are valid.
 
 Motif discovery uses only the first four nucleotide channels. The two optional annotation channels are preserved as sequence features and are used for region-restricted runs. Trailing 3' padding is inferred conservatively from all-zero nucleotide columns; interior all-zero nucleotide columns are treated as ambiguous unless an explicit mask is provided through the Python API.
 

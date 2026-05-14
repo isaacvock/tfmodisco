@@ -119,10 +119,10 @@ def infer_padding_mask(sequence, sequence_mask=None):
 def infer_region_mask(sequence, padding_mask, region="all"):
 	"""Infer an N x L region mask from RNA sequence channels.
 
-	For 6-channel inputs, channel 4 marks CDS codon starts and channel 5 marks a
-	5' splice-site annotation. CDS/UTR boundaries are inferred from phase-
-	consistent codon starts; the splice-site channel is validated and preserved
-	as annotation rather than treated as a nucleotide channel.
+	For 6-channel inputs, channel 4 marks CDS codon starts and channel 5 marks
+	5' splice-site annotations. CDS/UTR boundaries are inferred from phase-
+	consistent codon starts; splice-site annotations are validated against
+	padding and preserved rather than treated as nucleotide channels.
 	"""
 
 	region = normalize_region(region)
@@ -184,11 +184,6 @@ def infer_region_mask(sequence, padding_mask, region="all"):
 				"example {} has 5' splice-site annotations in inferred padding."
 				.format(example_idx)
 			)
-		if len(splice_sites) > 1:
-			raise ValueError(
-				"example {} has {} 5' splice-site annotations; expected at most 1."
-				.format(example_idx, len(splice_sites))
-			)
 		if len(codon_starts) == 0:
 			raise ValueError(
 				"example {} cannot infer {!r}: no CDS codon-start annotations."
@@ -218,7 +213,7 @@ def infer_region_mask(sequence, padding_mask, region="all"):
 			"valid_end": valid_end,
 			"cds_start": cds_start,
 			"cds_end": cds_end,
-			"splice_site": int(splice_sites[0]) if len(splice_sites) == 1 else None,
+			"splice_sites": [int(pos) for pos in splice_sites],
 		}
 
 		if region == "5utr":

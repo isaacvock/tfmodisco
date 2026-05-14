@@ -35,7 +35,7 @@ def _annotated_sequence():
     sequence = np.zeros((1, 24, 6), dtype="float32")
     sequence[0, :20, :4] = _one_hot("ACGU" * 5)
     sequence[0, [6, 9, 12], 4] = 1
-    sequence[0, 4, 5] = 1
+    sequence[0, [4, 10, 16], 5] = 1
     return sequence
 
 
@@ -121,6 +121,7 @@ def test_region_masks_for_5utr_cds_and_3utr():
 
     assert meta[0]["cds_start"] == 6
     assert meta[0]["cds_end"] == 15
+    assert meta[0]["splice_sites"] == [4, 10, 16]
     np.testing.assert_array_equal(np.flatnonzero(mask_5utr[0]), np.arange(0, 6))
     np.testing.assert_array_equal(np.flatnonzero(mask_cds[0]), np.arange(6, 15))
     np.testing.assert_array_equal(np.flatnonzero(mask_3utr[0]), np.arange(15, 20))
