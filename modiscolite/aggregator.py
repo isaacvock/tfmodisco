@@ -47,14 +47,10 @@ def _expand_seqlets_to_fill_pattern(pattern, track_set, left_flank_to_add,
 		left_expansion = left_flank_to_add 
 		right_expansion = len(pattern) - len(seqlet) + right_flank_to_add
 
-		if seqlet.is_revcomp == False:
-			start = seqlet.start - left_expansion
-			end = seqlet.end + right_expansion
-		else:
-			start = seqlet.start - right_expansion
-			end = seqlet.end + left_expansion
+		start = seqlet.start - left_expansion
+		end = seqlet.end + right_expansion
 		
-		if start >= 0 and end <= track_set.length:
+		if track_set.is_valid_interval(seqlet.example_idx, start, end):
 			seqlet = track_set.create_seqlets(
 				seqlets=[core.Seqlet(example_idx=seqlet.example_idx,
 					start=start, end=end, is_revcomp=seqlet.is_revcomp)])[0]
@@ -70,24 +66,18 @@ def _expand_seqlets_to_fill_pattern(pattern, track_set, left_flank_to_add,
 def _align_patterns(parent_pattern, child_pattern, metric, min_overlap, 
 	transformer, include_hypothetical):
 
-	fwd_data_parent, rev_data_parent = util.get_2d_data_from_patterns(
+	fwd_data_parent, _ = util.get_2d_data_from_patterns(
 		[parent_pattern], transformer=transformer,
 		include_hypothetical=include_hypothetical)
 
-	fwd_data_child, rev_data_child = util.get_2d_data_from_patterns(
+	fwd_data_child, _ = util.get_2d_data_from_patterns(
 		[child_pattern], transformer=transformer,
 		include_hypothetical=include_hypothetical)
 
 	best_crossmetric, best_crossmetric_argmax = metric(fwd_data_child, 
 		fwd_data_parent, min_overlap).squeeze()
 
-	best_crossmetric_rev, best_crossmetric_argmax_rev = metric(rev_data_child, 
-		fwd_data_parent, min_overlap).squeeze()
-
-	if best_crossmetric_rev > best_crossmetric:
-		return int(best_crossmetric_argmax_rev), True, best_crossmetric_rev
-	else:
-		return int(best_crossmetric_argmax), False, best_crossmetric
+	return int(best_crossmetric_argmax), False, best_crossmetric
 
 
 def merge_in_seqlets_filledges(parent_pattern, seqlets_to_merge,
@@ -97,25 +87,18 @@ def merge_in_seqlets_filledges(parent_pattern, seqlets_to_merge,
 	parent_pattern = parent_pattern.copy()
 
 	for seqlet in seqlets_to_merge:
-		alnmt, revcomp_match, alnmt_score = _align_patterns(parent_pattern, 
+		alnmt, _, alnmt_score = _align_patterns(parent_pattern,
 			seqlet, metric, min_overlap, transformer, include_hypothetical)
 		
-		if revcomp_match:
-			seqlet = seqlet.revcomp()
-
 		preexpansion_seqletlen = len(seqlet)
 
 		left_expansion = max(alnmt,0)
 		right_expansion = max((len(parent_pattern) - (alnmt+len(seqlet))), 0)
 
-		if seqlet.is_revcomp == False:
-			start = seqlet.start - left_expansion
-			end = seqlet.end + right_expansion
-		else:
-			start = seqlet.start - right_expansion
-			end = seqlet.end + left_expansion
+		start = seqlet.start - left_expansion
+		end = seqlet.end + right_expansion
 
-		if start >= 0 and end <= track_set.length:
+		if track_set.is_valid_interval(seqlet.example_idx, start, end):
 			seqlet = track_set.create_seqlets(
 				seqlets=[core.Seqlet(example_idx=seqlet.example_idx,
 					start=start, end=end, is_revcomp=seqlet.is_revcomp)])[0] 
@@ -250,7 +233,7 @@ def SimilarPatternsCollapser(patterns, track_set,
 					continue 
 
 				#Compute best alignment between pattern pair
-				alnmt, rc, aligner_sim =\
+				alnmt, _, aligner_sim =\
 					_align_patterns(parent_pattern=patterns[i], 
 						child_pattern=patterns[j], 
 						metric=affinitymat.pearson_correlation, 
@@ -262,16 +245,13 @@ def SimilarPatternsCollapser(patterns, track_set,
 
 				#get realigned pattern2
 				pattern2_coords = subsample_patterns[j].seqlets
-				if rc: #flip strand if needed to align
-					pattern2_coords  = [x.revcomp() for x in pattern2_coords]
-
 				#now apply the alignment
-				pattern2_coords = [x.shift((1 if x.is_revcomp else -1)*alnmt)
-					for x in pattern2_coords] 
+				pattern2_coords = [x.shift(-alnmt) for x in pattern2_coords] 
 
 				# Filter out bad seqlets
 				pattern2_coords = [seqlet for seqlet in pattern2_coords 
-					if seqlet.start >= 0 and seqlet.end < track_set.length]
+					if track_set.is_valid_interval(
+						seqlet.example_idx, seqlet.start, seqlet.end)]
 
 				if len(pattern2_coords) == 0:
 					pairwise_sims[i, j] = 0.0

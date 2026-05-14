@@ -155,6 +155,8 @@ def save_pattern(pattern, grp):
 	grp.create_dataset("sequence", data=pattern.sequence)
 	grp.create_dataset("contrib_scores", data=pattern.contrib_scores)
 	grp.create_dataset("hypothetical_contribs", data=pattern.hypothetical_contribs)
+	if getattr(pattern, "sequence_features", None) is not None:
+		grp.create_dataset("sequence_features", data=pattern.sequence_features)
 
 	seqlet_grp = grp.create_group("seqlets")
 	seqlet_grp.create_dataset("n_seqlets", data=np.array([len(pattern.seqlets)]))
@@ -165,7 +167,7 @@ def save_pattern(pattern, grp):
 	seqlet_grp.create_dataset("example_idx", 
 		data=np.array([seqlet.example_idx for seqlet in pattern.seqlets]))
 	seqlet_grp.create_dataset("is_revcomp",
-		data=np.array([seqlet.is_revcomp for seqlet in pattern.seqlets]))
+		data=np.zeros(len(pattern.seqlets), dtype=bool))
 
 	seqlet_grp.create_dataset("sequence",
 		data=np.array([seqlet.sequence for seqlet in pattern.seqlets]))
@@ -173,6 +175,12 @@ def save_pattern(pattern, grp):
 		data=np.array([seqlet.contrib_scores for seqlet in pattern.seqlets]))
 	seqlet_grp.create_dataset("hypothetical_contribs",
 		data=np.array([seqlet.hypothetical_contribs for seqlet in pattern.seqlets]))
+	if getattr(pattern.seqlets[0], "sequence_features", None) is not None:
+		seqlet_grp.create_dataset("sequence_features",
+			data=np.array([seqlet.sequence_features for seqlet in pattern.seqlets]))
+	if getattr(pattern.seqlets[0], "position_mask", None) is not None:
+		seqlet_grp.create_dataset("position_mask",
+			data=np.array([seqlet.position_mask for seqlet in pattern.seqlets]))
 
 	if pattern.subclusters is not None:
 		for subcluster, subpattern in pattern.subcluster_to_subpattern.items():
@@ -180,7 +188,8 @@ def save_pattern(pattern, grp):
 			save_pattern(subpattern, subpattern_grp)
 
 
-def save_hdf5(filename: os.PathLike, pos_patterns, neg_patterns, window_size: int):
+def save_hdf5(filename: os.PathLike, pos_patterns, neg_patterns, window_size: int,
+	region: str = "all"):
 	"""Save the results of tf-modisco to a h5 file.
 
 	This function will save the SeqletSets and their associated seqlets in
@@ -204,6 +213,11 @@ def save_hdf5(filename: os.PathLike, pos_patterns, neg_patterns, window_size: in
 	grp = h5py.File(filename, 'w')
 	
 	grp.attrs['window_size'] = window_size
+	grp.attrs['sequence_length'] = window_size
+	grp.attrs['tool'] = 'RNA-MoDISco'
+	grp.attrs['alphabet'] = 'ACGU'
+	grp.attrs['reverse_complement'] = False
+	grp.attrs['region'] = region
 	
 	if pos_patterns is not None:
 		pos_group = grp.create_group("pos_patterns")
@@ -231,11 +245,12 @@ def write_meme_from_h5(filename: os.PathLike, datatype: util.MemeDataType, outpu
 		The name of the MEME file to write.
 	"""
 
-	alphabet = 'ACGT'
+	alphabet = 'ACGU'
 	writer = meme_writer.MEMEWriter(
 		memesuite_version='5',
 		alphabet=alphabet,
-		background_frequencies='A 0.25 C 0.25 G 0.25 T 0.25'
+		background_frequencies='A 0.25 C 0.25 G 0.25 U 0.25',
+		strands='+'
 	)
 
 
@@ -250,7 +265,13 @@ def write_meme_from_h5(filename: os.PathLike, datatype: util.MemeDataType, outpu
 
 				probability_matrix = None
 				if datatype == util.MemeDataType.PFM:
-					probability_matrix = datasets['sequence'][:] / np.sum(datasets['sequence'][:], axis=1, keepdims=True)
+					probability_matrix = datasets['sequence'][:]
+					row_sums = np.sum(probability_matrix, axis=1, keepdims=True)
+					probability_matrix = np.divide(
+						probability_matrix, row_sums,
+						out=np.tile(np.array([[0.25, 0.25, 0.25, 0.25]]),
+							(probability_matrix.shape[0], 1)),
+						where=row_sums > 0)
 				elif datatype == util.MemeDataType.CWM:
 					probability_matrix = datasets['contrib_scores'][:]
 				elif datatype == util.MemeDataType.hCWM:
@@ -331,7 +352,7 @@ def write_bed_from_h5(modisco_results_filepath: os.PathLike, peaks_filepath: os.
 					track_line=bed_writer.BEDTrackLine(
 						arguments=OrderedDict([
 							('name', pattern_name),
-							('description', f"TF-MoDISco pattern '{pattern_name}' on the positive strand.")
+							('description', f"RNA-MoDISco pattern '{pattern_name}' in the provided orientation.")
 						])
 					)
 				)
@@ -361,7 +382,7 @@ def write_bed_from_h5(modisco_results_filepath: os.PathLike, peaks_filepath: os.
 					absolute_seqlet_start = absolute_peak_center - window_center_offset + seqlet_start_offset
 					absolute_seqlet_end = absolute_peak_center - window_center_offset + seqlet_end_offset
 
-					strand_char = '-' if bool(datasets['seqlets']['is_revcomp'][idx]) is True else '+'
+					strand_char = '+'
 
 					track.add_row(
 						bed_writer.BEDRow(
@@ -407,7 +428,7 @@ def write_fasta_from_h5(modisco_results_filepath: os.PathLike, peaks_filepath: o
 	"""
 
 	# Note: Make sure this alphabet's order matches the order of the nucleotide tracks.
-	alphabet = ['A', 'C', 'G', 'T']
+	alphabet = ['A', 'C', 'G', 'U']
 
 	peak_rows_filtered = None
 	with open(peaks_filepath, 'r') as peaks_file:
@@ -466,7 +487,11 @@ def write_fasta_from_h5(modisco_results_filepath: os.PathLike, peaks_filepath: o
 					seqlet_end_offset = datasets['seqlets']['end'][idx]
 
 					nucleotide_tracks = sequences[row_num]
-					assert nucleotide_tracks.shape[0] == 4
+					if nucleotide_tracks.shape[0] not in (4, 6):
+						raise ValueError(
+							"Expected sequence file rows to have 4 or 6 channels; "
+							"got {}.".format(nucleotide_tracks.shape[0]))
+					nucleotide_tracks = nucleotide_tracks[:4]
 					sequence = []
 					for pos in range(seqlet_start_offset, seqlet_end_offset):
 						bp_track = nucleotide_tracks[:, pos]
@@ -480,7 +505,7 @@ def write_fasta_from_h5(modisco_results_filepath: os.PathLike, peaks_filepath: o
 					absolute_seqlet_start = absolute_peak_center - window_center_offset + seqlet_start_offset
 					absolute_seqlet_end = absolute_peak_center - window_center_offset + seqlet_end_offset
 
-					strand_char = '-' if bool(datasets['seqlets']['is_revcomp'][idx]) is True else '+'
+					strand_char = '+'
 
 					writer.add_pair(
 						fasta_writer.FASTAEntry(

@@ -9,7 +9,7 @@ import h5py
 import numpy as np
 
 import modiscolite
-from modiscolite.util import calculate_window_offsets, MemeDataType
+from modiscolite.util import MemeDataType
 
 
 def _split_chroms(chroms: str) -> Union[List[str], Literal["*"]]:
@@ -18,7 +18,7 @@ def _split_chroms(chroms: str) -> Union[List[str], Literal["*"]]:
 
 
 @click.group(
-    help="""TF-MoDISco is a motif detection algorithm that takes in nucleotide
+    help="""RNA-MoDISco is a stranded RNA motif detection algorithm that takes in nucleotide
 sequence and their neural-network attribution scores, then extracts motifs that
 are repeatedly enriched for attribution signal across the dataset. Use the
 sub-commands below to run motif discovery, generate reports, or convert result
@@ -28,7 +28,7 @@ def cli() -> None:
     pass
 
 
-@cli.command(help="Run TF-MoDISco and extract the motifs.")
+@cli.command(help="Run RNA-MoDISco and extract motifs from full non-padded RNA or an inferred region.")
 @click.option(
     "-s",
     "--sequences",
@@ -69,9 +69,11 @@ def cli() -> None:
     "-w",
     "--window",
     type=int,
-    default=400,
-    show_default=True,
-    help="The window surrounding the peak center that will be considered for motif discovery."
+    default=None,
+    help=(
+        "Deprecated for RNA-MoDISco. Motif discovery always uses the full "
+        "non-padded RNA sequence or the full inferred --region."
+    ),
 )
 @click.option(
     "-z",
@@ -122,6 +124,13 @@ def cli() -> None:
     show_default=True,
     help="Path to the output HDF5 file.",
 )
+@click.option(
+    "--region",
+    type=click.Choice(["all", "5utr", "cds", "3utr"], case_sensitive=False),
+    default="all",
+    show_default=True,
+    help="RNA region to run on when sequence input has 6 channels.",
+)
 @click.option("-v", "--verbose", is_flag=True)
 def motifs(
     seq_path: str,
@@ -129,28 +138,32 @@ def motifs(
     h5_path: str,
     max_seqlets: int,
     n_leiden: int,
-    window: int,
+    window: Optional[int],
     sliding: int,
     trim_size: int,
     seqlet_flank_size: int,
     initial_flank_to_add: int,
     final_flank_to_add: int,
     output: str,
+    region: str,
     verbose: bool,
 ):
-    """Run TF-MoDISco and extract the motifs."""
+    """Run RNA-MoDISco and extract motifs."""
+    if window is not None:
+        raise click.UsageError(
+            "RNA-MoDISco no longer accepts --window/-w for motif discovery. "
+            "Remove this option; use --region all/5utr/cds/3utr to restrict "
+            "the search to an inferred RNA region."
+        )
+
     if h5_path:
         f = h5py.File(h5_path, "r")
         try:
-            center = f["hyp_scores"].shape[1] // 2
-            start, end = calculate_window_offsets(center, window)
-            attributions = f["hyp_scores"][..., :][..., start:end, :]
-            sequences = f["input_seqs"][..., :][..., start:end, :]
+            attributions = f["hyp_scores"][..., :]
+            sequences = f["input_seqs"][..., :]
         except KeyError:
-            center = f["shap"]["seq"].shape[2] // 2
-            start, end = calculate_window_offsets(center, window)
-            attributions = f["shap"]["seq"][..., :, start:end].transpose(0, 2, 1)
-            sequences = f["raw"]["seq"][..., :, start:end].transpose(0, 2, 1)
+            attributions = f["shap"]["seq"][..., :, :].transpose(0, 2, 1)
+            sequences = f["raw"]["seq"][..., :, :].transpose(0, 2, 1)
         f.close()
     else:
         seq_path = Path(seq_path)
@@ -165,15 +178,10 @@ def motifs(
             if attr_path.suffix == ".npz"
             else np.load(attr_path)
         )
-        center = sequences.shape[2] // 2
-        start, end = calculate_window_offsets(center, window)
-        sequences = sequences[:, :, start:end].transpose(0, 2, 1)
-        attributions = attributions[:, :, start:end].transpose(0, 2, 1)
 
-    if sequences.shape[1] < window:
-        raise ValueError(
-            f"Window ({window}) cannot be longer than the sequence length ({sequences.shape[1]})."
-        )
+    standardized_sequences, _ = modiscolite.tfmodisco._standardize_input_shapes(
+        sequences, attributions)
+    sequence_length = standardized_sequences.shape[1]
 
     pos_patterns, neg_patterns = modiscolite.tfmodisco.TFMoDISco(
         one_hot=sequences.astype("float32"),
@@ -186,9 +194,11 @@ def motifs(
         final_flank_to_add=final_flank_to_add,
         target_seqlet_fdr=0.05,
         n_leiden_runs=n_leiden,
+        region=region,
         verbose=verbose,
     )
-    modiscolite.io.save_hdf5(output, pos_patterns, neg_patterns, window)
+    modiscolite.io.save_hdf5(output, pos_patterns, neg_patterns,
+                             sequence_length, region=region)
 
 
 @cli.command(

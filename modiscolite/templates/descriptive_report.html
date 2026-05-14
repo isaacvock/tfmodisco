@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TF-MoDISco Analysis Report</title>
+    <title>RNA-MoDISco Analysis Report</title>
     <style>
         /* Adapted from https://github.com/oxalorg/sakura/ */
         html {
@@ -430,13 +430,13 @@
 
 <body>
     <div class="content-container">
-        <h1>TF-MoDISco Report</h1>
+        <h1>RNA-MoDISco Report</h1>
 
     <div class="intro-box">
-        <h2>Introduction to TF-MoDISco</h2>
+        <h2>Introduction to RNA-MoDISco</h2>
 
-        <h3>What is TF-MoDISco?</h3>
-        <p><strong>TF-MoDISco</strong> (<strong>T</strong>ranscription <strong>F</strong>actor <strong>Mo</strong>tif <strong>D</strong>iscovery from <strong>I</strong>mportance <strong>Sco</strong>res) is a method for discovering sequence motifs from neural network-derived importance scores. Unlike traditional motif discovery methods that rely solely on sequence enrichment, TF-MoDISco leverages context-aware importance scores to identify patterns.</p>
+        <h3>What is RNA-MoDISco?</h3>
+        <p><strong>RNA-MoDISco</strong> is a stranded RNA-focused motif discovery workflow for neural network-derived importance scores. It identifies recurring high-importance RNA seqlets in the provided orientation and clusters them into motifs.</p>
 
         <h3>Preliminary Concepts</h3>
 
@@ -447,7 +447,7 @@
         </ul>
 
         <h4>Seqlets</h4>
-        <p><strong>About Seqlets:</strong> Seqlets are short subsequences identified as having high contribution scores. These are the building blocks that TF-MoDISco clusters into motifs. The number of seqlets reported represents high-confidence instances used for motif construction and is a subset of the total number of binding sites. Additional sites likely exist in the data but were filtered during the clustering process.</p>
+        <p><strong>About Seqlets:</strong> Seqlets are short subsequences identified as having high contribution scores. These are the building blocks that RNA-MoDISco clusters into motifs. The number of seqlets reported represents high-confidence instances used for motif construction and is a subset of the total number of sites. Additional sites likely exist in the data but were filtered during the clustering process.</p>
         <p><strong>Position Statistics:</strong> Seqlet positions are displayed relative to its input region's midpoint (set at position 0), with negative values indicating upstream positions and positive values downstream. The "median distance from center" statistic is the median absolute seqlet distance from the corresponding regions' midpoints.</p>
         <p><strong>Contribution Score Statistics:</strong> The "total contribution" of a seqlet is computed as the the total absolute contribution scores across all positions. This provides a measure of the overall strength of the seqlets's influence on model predictions.</p>
         <p><strong>Seqlet Selection for Visualization:</strong> Representative seqlets are selected from different total contribution quantiles (10th, 20th, 30th, etc. percentiles) to show the range of pattern strength.</p>
@@ -471,8 +471,7 @@
                     <th>Seqlets</th>
                     <th>Avg. Contribution</th>
                     <th>Med. Center Dist.</th>
-                    <th>CWM Fwd</th>
-                    <th>CWM Rev</th>
+                    <th>CWM</th>
                     {% if meme_motif_db %}
                     <th>Match 0</th>
                     <th>Q-value</th>
@@ -522,12 +521,7 @@
                     </td>
                     <td class="logo-cell">
                         {% if pattern_tag in logo_paths %}
-                        <img src="{{ logo_paths[pattern_tag]['trimmed_cwm_fwd'] }}" alt="CWM Fwd">
-                        {% endif %}
-                    </td>
-                    <td class="logo-cell">
-                        {% if pattern_tag in logo_paths %}
-                        <img src="{{ logo_paths[pattern_tag]['trimmed_cwm_rev'] }}" alt="CWM Rev">
+                        <img src="{{ logo_paths[pattern_tag]['trimmed_cwm'] }}" alt="CWM">
                         {% endif %}
                     </td>
                     {% if meme_motif_db %}
@@ -698,7 +692,7 @@
 
     {% if not patterns_data %}
     <blockquote>
-        <p><strong>Note:</strong> No patterns were found in the provided TF-MoDISco results file. This could indicate that no significant motifs were discovered during the analysis, or there may be an issue with the input file format.</p>
+        <p><strong>Note:</strong> No patterns were found in the provided RNA-MoDISco results file. This could indicate that no significant motifs were discovered during the analysis, or there may be an issue with the input file format.</p>
     </blockquote>
     {% endif %}
 

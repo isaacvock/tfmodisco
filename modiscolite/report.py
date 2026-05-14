@@ -20,6 +20,12 @@ from memelite.io import read_meme
 pd.options.display.max_colwidth = 500
 
 def compute_per_position_ic(ppm, background, pseudocount):
+    row_sums = np.sum(ppm, axis=1)
+    if not np.allclose(row_sums, 1.0, atol=1.0e-5):
+        ppm = ppm.copy()
+        nonzero = row_sums > 0
+        ppm[nonzero] = ppm[nonzero] / row_sums[nonzero, None]
+        ppm[~nonzero] = background
     alphabet_len = len(background)
     ic = ((np.log((ppm+pseudocount)/(1 + pseudocount*alphabet_len))/np.log(2))
           *ppm - (np.log(background)*background/np.log(2))[None,:])
@@ -29,10 +35,10 @@ def compute_per_position_ic(ppm, background, pseudocount):
 def write_meme_file(ppm, bg, fname):
 	f = open(fname, 'w')
 	f.write('MEME version 4\n\n')
-	f.write('ALPHABET= ACGT\n\n')
-	f.write('strands: + -\n\n')
+	f.write('ALPHABET= ACGU\n\n')
+	f.write('strands: +\n\n')
 	f.write('Background letter frequencies (from unknown source):\n')
-	f.write('A %.3f C %.3f G %.3f T %.3f\n\n' % tuple(list(bg)))
+	f.write('A %.3f C %.3f G %.3f U %.3f\n\n' % tuple(list(bg)))
 	f.write('MOTIF 1 TEMP\n')
 	f.write('letter-probability matrix: alength= 4 w= %d nsites= 1 E= 0e+0\n' % ppm.shape[0])
 	for s in ppm:
@@ -52,7 +58,7 @@ def fetch_tomtom_matches(ppm, cwm, is_writing_tomtom_matrix, output_dir,
 		is_writing_tomtom_matrix: if True, write the tomtom matrix to a file
 		output_dir: directory for writing the TOMTOM file
 		pattern_name: the name of the pattern, to be used for writing to file
-		background: list with ACGT background probabilities
+		background: list with ACGU background probabilities
 		tomtom_exec_path: path to TomTom executable
 		motifs_db: path to motifs database in meme format
 		n: number of top matches to return, ordered by p-value
@@ -70,6 +76,8 @@ def fetch_tomtom_matches(ppm, cwm, is_writing_tomtom_matrix, output_dir,
 	score = np.sum(np.abs(cwm), axis=1)
 	trim_thresh = np.max(score) * trim_threshold  # Cut off anything less than 30% of max score
 	pass_inds = np.where(score >= trim_thresh)[0]
+	if len(pass_inds) == 0:
+		return []
 	trimmed = ppm[np.min(pass_inds): np.max(pass_inds) + 1]
 
 	# can be None of no base has prob>t
@@ -177,6 +185,8 @@ def tomtomlite_dataframe(
 				score = np.sum(np.abs(cwm), axis=1)
 				trim_thresh = np.max(score) * trim_threshold  # Cut off anything less than 30% of max score
 				pass_inds = np.where(score >= trim_thresh)[0]
+				if len(pass_inds) == 0:
+					continue
 				
 				ppm = ppm[np.min(pass_inds): np.max(pass_inds) + 1]
 				ppms.append(ppm.T)
@@ -208,7 +218,7 @@ def _plot_weights(array, path, figsize=(10,3), clamp=True):
 	fig = plt.figure(figsize=figsize)
 	ax = fig.add_subplot(111) 
 
-	df = pandas.DataFrame(array, columns=['A', 'C', 'G', 'T'])
+	df = pandas.DataFrame(array, columns=['A', 'C', 'G', 'U'])
 	df.index.name = 'pos'
 
 	crp_logo = logomaker.Logo(df, ax=ax)
@@ -247,26 +257,20 @@ def create_modisco_logos(modisco_h5py: os.PathLike, modisco_logo_dir, trim_thres
 			tag = '{}.{}'.format(name, pattern_name)
 			tags.append(tag)
 
-			cwm_fwd = np.array(pattern['contrib_scores'][:])
-			cwm_rev = cwm_fwd[::-1, ::-1]
+			cwm = np.array(pattern['contrib_scores'][:])
 
-			score_fwd = np.sum(np.abs(cwm_fwd), axis=1)
-			score_rev = np.sum(np.abs(cwm_rev), axis=1)
+			score = np.sum(np.abs(cwm), axis=1)
 
-			trim_thresh_fwd = np.max(score_fwd) * trim_threshold
-			trim_thresh_rev = np.max(score_rev) * trim_threshold
+			trim_thresh = np.max(score) * trim_threshold
 
-			pass_inds_fwd = np.where(score_fwd >= trim_thresh_fwd)[0]
-			pass_inds_rev = np.where(score_rev >= trim_thresh_rev)[0]
+			pass_inds = np.where(score >= trim_thresh)[0]
+			if len(pass_inds) > 0:
+				start, end = max(np.min(pass_inds) - 4, 0), min(np.max(pass_inds) + 4 + 1, len(score) + 1)
+				trimmed_cwm = cwm[start:end]
+			else:
+				trimmed_cwm = cwm
 
-			start_fwd, end_fwd = max(np.min(pass_inds_fwd) - 4, 0), min(np.max(pass_inds_fwd) + 4 + 1, len(score_fwd) + 1)
-			start_rev, end_rev = max(np.min(pass_inds_rev) - 4, 0), min(np.max(pass_inds_rev) + 4 + 1, len(score_rev) + 1)
-
-			trimmed_cwm_fwd = cwm_fwd[start_fwd:end_fwd]
-			trimmed_cwm_rev = cwm_rev[start_rev:end_rev]
-
-			_plot_weights(trimmed_cwm_fwd, path='{}/{}.cwm.fwd.png'.format(modisco_logo_dir, tag))
-			_plot_weights(trimmed_cwm_rev, path='{}/{}.cwm.rev.png'.format(modisco_logo_dir, tag))
+			_plot_weights(trimmed_cwm, path='{}/{}.cwm.png'.format(modisco_logo_dir, tag))
 
 	modisco_results.close()
 	return tags
@@ -286,7 +290,7 @@ def report_motifs(modisco_h5py: Path, output_dir: os.PathLike, img_path_suffix: 
 
 	create_modisco_logos(modisco_h5py, modisco_logo_dir, trim_threshold, pattern_groups)
 
-	results = {'pattern': [], 'num_seqlets': [], 'modisco_cwm_fwd': [], 'modisco_cwm_rev': []}
+	results = {'pattern': [], 'num_seqlets': [], 'modisco_cwm': []}
 
 	with h5py.File(modisco_h5py, 'r') as modisco_results:
 		for name in pattern_groups:
@@ -301,11 +305,10 @@ def report_motifs(modisco_h5py: Path, output_dir: os.PathLike, img_path_suffix: 
 
 				results['pattern'].append(pattern_tag)
 				results['num_seqlets'].append(num_seqlets)
-				results['modisco_cwm_fwd'].append(os.path.join(img_path_suffix, 'trimmed_logos', f'{pattern_tag}.cwm.fwd.png'))
-				results['modisco_cwm_rev'].append(os.path.join(img_path_suffix, 'trimmed_logos', f'{pattern_tag}.cwm.rev.png'))
+				results['modisco_cwm'].append(os.path.join(img_path_suffix, 'trimmed_logos', f'{pattern_tag}.cwm.png'))
 
 	patterns_df = pd.DataFrame(results)
-	reordered_columns = ['pattern', 'num_seqlets', 'modisco_cwm_fwd', 'modisco_cwm_rev']
+	reordered_columns = ['pattern', 'num_seqlets', 'modisco_cwm']
 
 	# If the optional meme_motif_db is not provided, then we won't generate TOMTOM comparison.
 	if meme_motif_db is not None:
@@ -346,7 +349,7 @@ def report_motifs(modisco_h5py: Path, output_dir: os.PathLike, img_path_suffix: 
 
 	patterns_df = patterns_df[reordered_columns]
 	patterns_df.to_html(open(os.path.join(output_dir, 'motifs.html'), 'w'),
-		escape=False, formatters=dict(modisco_cwm_fwd=path_to_image_html,
-			modisco_cwm_rev=path_to_image_html, match0_logo=path_to_image_html,
+		escape=False, formatters=dict(modisco_cwm=path_to_image_html,
+			match0_logo=path_to_image_html,
 			match1_logo=path_to_image_html, match2_logo=path_to_image_html), 
 		index=False)

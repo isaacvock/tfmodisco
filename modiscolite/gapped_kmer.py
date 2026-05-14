@@ -108,10 +108,6 @@ def _seqlet_to_gkmers(seqlets, topn, min_k, max_k, max_gap, max_len,
 		onehot = seqlet.sequence
 		contrib_scores = seqlet.hypothetical_contribs*onehot*sign
 
-		if not take_fwd:
-			onehot = onehot[::-1, ::-1]
-			contrib_scores = contrib_scores[::-1, ::-1]
-
 		#get the top n positiosn
 		per_pos_imp = np.sum(contrib_scores, axis=-1)
 		per_pos_bases = np.argmax(onehot, axis=-1)

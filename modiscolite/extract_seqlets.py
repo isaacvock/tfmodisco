@@ -5,6 +5,7 @@
 import numpy as np
 
 from . import core
+from . import rna
 from sklearn.isotonic import IsotonicRegression
 
 def _bin_mode(values, bins=1000):
@@ -14,11 +15,18 @@ def _bin_mode(values, bins=1000):
 	r_edge = bin_edges[peak+1]
 	return l_edge, r_edge, values[(l_edge < values) & (values < r_edge)]
 
-def _laplacian_null(track, window_size, num_to_samp, random_seed=1234):
+def _laplacian_null(track, window_size, num_to_samp, random_seed=1234,
+	window_mask=None):
 	percentiles_to_use = np.array([5*(x+1) for x in range(19)])
 
 	rng = np.random.RandomState()
-	values = np.concatenate(track, axis=0)
+	if window_mask is None:
+		values = np.concatenate(track, axis=0)
+	else:
+		values = track[window_mask]
+
+	if len(values) == 0:
+		raise ValueError("No valid windows were available for thresholding.")
 
 	# first estimate mu, using two level histogram to get to 1e-6
 	_, _, top_values = _bin_mode(values)
@@ -85,13 +93,26 @@ def _iterative_extract_seqlets(score_track, window_size, flank, suppress):
 	return seqlets
 
 
-def _smooth_and_split(tracks, window_size, subsample_cap=1000000):
+def _smooth_and_split(tracks, window_size, subsample_cap=1000000,
+	window_mask=None):
 	n = len(tracks)
 
 	tracks = np.hstack([np.zeros((n, 1)), np.cumsum(tracks, axis=-1)])
 	tracks = tracks[:, window_size:] - tracks[:, :-window_size]
 
-	values = np.concatenate(tracks, axis=0)
+	if window_mask is not None:
+		if window_mask.shape != tracks.shape:
+			raise ValueError(
+				"window_mask shape {} is incompatible with smoothed tracks shape {}."
+				.format(window_mask.shape, tracks.shape)
+			)
+		values = tracks[window_mask]
+	else:
+		values = np.concatenate(tracks, axis=0)
+
+	if len(values) == 0:
+		raise ValueError("No valid windows were available for seqlet extraction.")
+
 	if len(values) > subsample_cap:
 		values = np.random.RandomState(1234).choice(
 			a=values, size=subsample_cap, replace=False)
@@ -150,13 +171,22 @@ def _refine_thresholds(vals, pos_threshold, neg_threshold,
 
 def extract_seqlets(attribution_scores, window_size, flank, suppress, 
 	target_fdr, min_passing_windows_frac, max_passing_windows_frac, 
-	weak_threshold_for_counting_sign):
+	weak_threshold_for_counting_sign, position_mask=None):
+
+	window_mask = None
+	if position_mask is not None:
+		window_mask = rna.candidate_window_mask(
+			position_mask=position_mask, window_size=window_size, flank=flank)
+		if not np.any(window_mask):
+			raise ValueError(
+				"No valid seqlet windows remain after applying padding/region masks."
+			)
 
 	pos_values, neg_values, smoothed_tracks = _smooth_and_split(
-		attribution_scores, window_size)
+		attribution_scores, window_size, window_mask=window_mask)
 
 	pos_null_values, neg_null_values = _laplacian_null(track=smoothed_tracks, 
-		window_size=window_size, num_to_samp=10000)
+		window_size=window_size, num_to_samp=10000, window_mask=window_mask)
 
 	pos_threshold = _isotonic_thresholds(pos_values, pos_null_values, 
 		increasing=True, target_fdr=target_fdr)
@@ -170,8 +200,10 @@ def extract_seqlets(attribution_scores, window_size, flank, suppress,
 		  min_passing_windows_frac=min_passing_windows_frac,
 		  max_passing_windows_frac=max_passing_windows_frac) 
 
-	distribution = np.array(sorted(np.abs(np.concatenate(smoothed_tracks,
-		axis=0))))
+	distribution_values = (
+		smoothed_tracks[window_mask] if window_mask is not None
+		else np.concatenate(smoothed_tracks, axis=0))
+	distribution = np.array(sorted(np.abs(distribution_values)))
 
 	transformed_pos_threshold = np.sign(pos_threshold)*np.searchsorted(
 		a=distribution, v=abs(pos_threshold))/len(distribution)
@@ -183,10 +215,13 @@ def extract_seqlets(attribution_scores, window_size, flank, suppress,
 
 	smoothed_tracks[idxs] = np.abs(smoothed_tracks[idxs])
 	smoothed_tracks[~idxs] = -np.inf
+	if window_mask is not None:
+		smoothed_tracks[~window_mask] = -np.inf
 
 	# Filter out the flanks
-	smoothed_tracks[:, :flank] = -np.inf
-	smoothed_tracks[:, -flank:] = -np.inf
+	if flank > 0:
+		smoothed_tracks[:, :flank] = -np.inf
+		smoothed_tracks[:, -flank:] = -np.inf
 
 	seqlets = _iterative_extract_seqlets(score_track=smoothed_tracks,
 		window_size=window_size,

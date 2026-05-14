@@ -88,8 +88,12 @@ def compute_per_position_ic(ppm, background, pseudocount):
 		total information content at each positon of the ppm.
 	"""
 
-	if (not np.allclose(np.sum(ppm, axis=1), 1.0, atol=1.0e-5)):
-		ppm = ppm/np.sum(ppm, axis=1)[:,None]
+	row_sums = np.sum(ppm, axis=1)
+	if (not np.allclose(row_sums, 1.0, atol=1.0e-5)):
+		ppm = ppm.copy()
+		nonzero = row_sums > 0
+		ppm[nonzero] = ppm[nonzero] / row_sums[nonzero, None]
+		ppm[~nonzero] = background
 
 	alphabet_len = len(background)
 	ic = ((np.log((ppm+pseudocount)/(1 + pseudocount*alphabet_len))/np.log(2))
@@ -122,18 +126,20 @@ def get_2d_data_from_patterns(patterns, transformer='l1', include_hypothetical=T
 	if not include_hypothetical:
 		tracks = tracks[1:]
 
-	all_fwd_data, all_rev_data = [], []
+	all_fwd_data = []
 
 	for pattern in patterns:
 		snippets = [getattr(pattern, track) for track in tracks]
 
 		fwd_data = np.concatenate([func(snippet) for snippet in snippets], axis=1)
-		rev_data = np.concatenate([func(snippet[::-1, ::-1]) for snippet in snippets], axis=1)
 
 		all_fwd_data.append(fwd_data)
-		all_rev_data.append(rev_data)
 
-	return np.array(all_fwd_data), np.array(all_rev_data)
+	# Keep the tuple shape for existing call sites, but both entries represent
+	# the provided RNA orientation. Motif discovery no longer evaluates reverse
+	# complements.
+	all_fwd_data = np.array(all_fwd_data)
+	return all_fwd_data, all_fwd_data.copy()
 
 
 def calculate_window_offsets(center: int, window_size: int) -> tuple:

@@ -14,30 +14,55 @@ from . import util
 from collections import OrderedDict
 
 class TrackSet(object):
-	def __init__(self, one_hot, contrib_scores, hypothetical_contribs):
+	def __init__(self, one_hot, contrib_scores, hypothetical_contribs,
+		position_mask=None, sequence_features=None, padding_mask=None,
+		region="all", region_metadata=None):
 		self.one_hot = one_hot
 		self.contrib_scores = contrib_scores
 		self.hypothetical_contribs = hypothetical_contribs
-		self.length = len(one_hot[0])
+		self.length = one_hot.shape[1]
+		self.position_mask = (
+			np.ones(one_hot.shape[:2], dtype=bool)
+			if position_mask is None else position_mask.astype(bool))
+		self.padding_mask = (
+			self.position_mask.copy()
+			if padding_mask is None else padding_mask.astype(bool))
+		self.sequence_features = (
+			one_hot if sequence_features is None else sequence_features)
+		self.region = region
+		self.region_metadata = region_metadata
+
+	def is_valid_interval(self, example_idx, start, end):
+		return (
+			start >= 0 and end <= self.length and
+			np.all(self.position_mask[example_idx, start:end]))
 
 	def create_seqlets(self, seqlets):
 		for seqlet in seqlets:
+			if seqlet.is_revcomp:
+				raise ValueError(
+					"RNA-MoDISco is stranded and does not support reverse-complement "
+					"seqlets during motif discovery.")
+
 			idx = seqlet.example_idx
 			s, e = seqlet.start, seqlet.end
 
-			if seqlet.is_revcomp:
-				seqlet.sequence = self.one_hot[idx][s:e][::-1, ::-1]
-				seqlet.contrib_scores = self.contrib_scores[idx][s:e][::-1, ::-1]
-				seqlet.hypothetical_contribs = self.hypothetical_contribs[idx][s:e][::-1, ::-1]
-			else:
-				seqlet.sequence = self.one_hot[idx][s:e]
-				seqlet.contrib_scores = self.contrib_scores[idx][s:e]
-				seqlet.hypothetical_contribs = self.hypothetical_contribs[idx][s:e]				
+			if not self.is_valid_interval(idx, s, e):
+				raise ValueError(
+					"seqlet example {} interval {}:{} overlaps padding or an "
+					"excluded RNA region."
+					.format(idx, s, e))
+
+			seqlet.sequence = self.one_hot[idx][s:e]
+			seqlet.contrib_scores = self.contrib_scores[idx][s:e]
+			seqlet.hypothetical_contribs = self.hypothetical_contribs[idx][s:e]
+			seqlet.sequence_features = self.sequence_features[idx][s:e]
+			seqlet.position_mask = self.position_mask[idx][s:e]
 
 		return seqlets
 
 class Seqlet(object):
-	def __init__(self, example_idx, start, end, is_revcomp):
+	def __init__(self, example_idx, start, end, is_revcomp=False):
 		self.example_idx = example_idx
 		self.start = start
 		self.end = end
@@ -46,6 +71,8 @@ class Seqlet(object):
 		self.sequence = None
 		self.contrib_scores = None
 		self.hypothetical_contribs = None
+		self.sequence_features = None
+		self.position_mask = None
 
 		super(Seqlet, self).__init__()
 
@@ -62,15 +89,8 @@ class Seqlet(object):
 		return str(self.example_idx)+"_"+str(self.start)+"_"+str(self.end)
 
 	def revcomp(self):
-		new_seqlet = Seqlet(
-				example_idx=self.example_idx,
-				start=self.start, end=self.end,
-				is_revcomp=(self.is_revcomp==False))
-
-		new_seqlet.sequence = self.sequence[::-1, ::-1]
-		new_seqlet.contrib_scores = self.contrib_scores[::-1, ::-1]
-		new_seqlet.hypothetical_contribs = self.hypothetical_contribs[::-1, ::-1]
-		return new_seqlet
+		raise ValueError(
+			"RNA-MoDISco is stranded; reverse-complement seqlets are disabled.")
 
 	def shift(self, shift_amt):
 		return Seqlet(
@@ -79,12 +99,8 @@ class Seqlet(object):
 				is_revcomp=self.is_revcomp)
 
 	def trim(self, start_idx, end_idx):
-		if self.is_revcomp == False:
-			new_start = self.start + start_idx 
-			new_end = self.start + end_idx
-		else:
-			new_start = self.end - end_idx
-			new_end = self.end - start_idx
+		new_start = self.start + start_idx
+		new_end = self.start + end_idx
 
 		new_seqlet = Seqlet(example_idx=self.example_idx,
 			start=new_start, end=new_end, is_revcomp=self.is_revcomp)
@@ -93,6 +109,10 @@ class Seqlet(object):
 		new_seqlet.sequence = self.sequence[s:e]
 		new_seqlet.contrib_scores = self.contrib_scores[s:e]
 		new_seqlet.hypothetical_contribs = self.hypothetical_contribs[s:e]
+		if self.sequence_features is not None:
+			new_seqlet.sequence_features = self.sequence_features[s:e]
+		if self.position_mask is not None:
+			new_seqlet.position_mask = self.position_mask[s:e]
 		return new_seqlet
 
 
@@ -105,6 +125,13 @@ class SeqletSet():
 		self._sequence_sum = np.zeros((self.length, 4), dtype='float')
 		self._contrib_sum = np.zeros((self.length, 4), dtype='float')
 		self._hypothetical_sum = np.zeros((self.length, 4), dtype='float')
+		sequence_features = getattr(seqlets[0], "sequence_features", None)
+		self._sequence_features_sum = None
+		self.sequence_features = None
+		if sequence_features is not None:
+			self._sequence_features_sum = np.zeros(
+				(self.length, sequence_features.shape[1]), dtype='float')
+			self.sequence_features = np.zeros_like(self._sequence_features_sum)
 
 		self.sequence = np.zeros((self.length, 4), dtype='float')
 		self.contrib_scores = np.zeros((self.length, 4), dtype='float')
@@ -210,16 +237,21 @@ class SeqletSet():
 		self._sequence_sum[:n] += seqlet.sequence
 		self._contrib_sum[:n] += seqlet.contrib_scores
 		self._hypothetical_sum[:n] += seqlet.hypothetical_contribs
+		if (self._sequence_features_sum is not None and
+			seqlet.sequence_features is not None):
+			self._sequence_features_sum[:n] += seqlet.sequence_features
 
 		self.sequence = self._sequence_sum / ppc
 		self.contrib_scores = self._contrib_sum / ppc
 		self.hypothetical_contribs = self._hypothetical_sum / ppc
+		if self._sequence_features_sum is not None:
+			self.sequence_features = self._sequence_features_sum / ppc
 
 	def __len__(self):
 		return self.length
 
 	def save_seqlets(self, filename):
-		bases = np.array(['A', 'C', 'G', 'T'])
+		bases = np.array(['A', 'C', 'G', 'U'])
 
 		with open(filename, "w") as outfile:
 			for seqlet in self.seqlets:

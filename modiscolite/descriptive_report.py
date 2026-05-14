@@ -18,7 +18,7 @@ def plot_to_base64(array, figsize=(10, 3), clamp=True):
     ax = fig.add_subplot(111)
 
     import pandas
-    df = pandas.DataFrame(array, columns=['A', 'C', 'G', 'T'])
+    df = pandas.DataFrame(array, columns=['A', 'C', 'G', 'U'])
     df.index.name = 'pos'
 
     import logomaker
@@ -232,29 +232,11 @@ def create_logos(patterns_data: Dict, output_dir: str, trim_threshold: float = 0
         logos['pwm'] = logos['ic_ppm']
         logos['pwm_path'] = logos['ic_ppm_path']
 
-        # Trimmed CWM Logo (Forward)
-        trimmed_path = os.path.join(pattern_dir, 'trimmed_cwm_fwd_logo.png')
+        # Trimmed CWM Logo in the provided RNA orientation.
+        trimmed_path = os.path.join(pattern_dir, 'trimmed_cwm_logo.png')
         _plot_weights(trimmed_cwm, trimmed_path, figsize=(10, 3))
         logos['trimmed_cwm_fwd'] = plot_to_base64(trimmed_cwm, figsize=(10, 3))
         logos['trimmed_cwm_fwd_path'] = trimmed_path
-
-        # Trimmed CWM Logo (Reverse)
-        cwm_rev = cwm[::-1, ::-1]
-        score_rev = np.sum(np.abs(cwm_rev), axis=1)
-        trim_thresh_rev = np.max(score_rev) * trim_threshold
-        pass_inds_rev = np.where(score_rev >= trim_thresh_rev)[0]
-
-        if len(pass_inds_rev) > 0:
-            start_trim_rev = max(np.min(pass_inds_rev) - 2, 0)
-            end_trim_rev = min(np.max(pass_inds_rev) + 3, len(score_rev))
-            trimmed_cwm_rev = cwm_rev[start_trim_rev:end_trim_rev]
-        else:
-            trimmed_cwm_rev = cwm_rev
-
-        trimmed_rev_path = os.path.join(pattern_dir, 'trimmed_cwm_rev_logo.png')
-        _plot_weights(trimmed_cwm_rev, trimmed_rev_path, figsize=(10, 3))
-        logos['trimmed_cwm_rev'] = plot_to_base64(trimmed_cwm_rev, figsize=(10, 3))
-        logos['trimmed_cwm_rev_path'] = trimmed_rev_path
 
         # Keep original for backwards compatibility
         logos['trimmed_cwm'] = logos['trimmed_cwm_fwd']

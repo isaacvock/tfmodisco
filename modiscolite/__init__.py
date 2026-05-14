@@ -5,6 +5,7 @@ from . import core
 from . import gapped_kmer
 from . import io
 from . import util
+from . import rna
 from . import tfmodisco
 from . import cluster
 from . import report

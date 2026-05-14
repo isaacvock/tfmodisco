@@ -71,28 +71,23 @@ def cosine_similarity_from_seqlets(seqlets, n_neighbors, sign, topn=20,
 	X_fwd = gapped_kmer._seqlet_to_gkmers(seqlets, topn, 
 		min_k, max_k, max_gap, max_len, max_entries, True, sign)
 
-	X_bwd = gapped_kmer._seqlet_to_gkmers(seqlets, topn, min_k, max_k, max_gap, 
-			max_len, max_entries, False, sign)
-
 	X = sklearn.preprocessing.normalize(X_fwd, norm='l2', axis=1)
-	Y = sklearn.preprocessing.normalize(X_bwd, norm='l2', axis=1)
 
 	n, d = X.shape
 	k = min(n_neighbors+1, n)
-	return _sparse_mm_dot(X.data, X.indices, X.indptr, Y.data, Y.indices, Y.indptr, k)
+	return _sparse_mm_dot(X.data, X.indices, X.indptr, X.data, X.indices, X.indptr, k)
 
 
 def jaccard_from_seqlets(seqlets, min_overlap, filter_seqlets=None, 
 	seqlet_neighbors=None):
 
-	all_fwd_data, all_rev_data = util.get_2d_data_from_patterns(seqlets)
+	all_fwd_data, _ = util.get_2d_data_from_patterns(seqlets)
 
 	if filter_seqlets is None:
 		filter_seqlets = seqlets
 		filters_all_fwd_data = all_fwd_data
-		filters_all_rev_data = all_rev_data
 	else:
-		filters_all_fwd_data, filters_all_rev_data = util.get_2d_data_from_patterns(filter_seqlets)
+		filters_all_fwd_data, _ = util.get_2d_data_from_patterns(filter_seqlets)
 
 	if seqlet_neighbors is None:
 		seqlet_neighbors = [list(range(len(filter_seqlets)))
@@ -104,13 +99,7 @@ def jaccard_from_seqlets(seqlets, min_overlap, filter_seqlets=None,
 		Y=all_fwd_data, min_overlap=min_overlap, func=int, 
 		return_sparse=True)
 
-	affmat_rev = jaccard(seqlet_neighbors=seqlet_neighbors,
-		X=filters_all_rev_data, Y=all_fwd_data,
-		min_overlap=min_overlap, func=int,
-		return_sparse=True) 
-
-	affmat = np.maximum(affmat_fwd, affmat_rev)
-	return affmat
+	return affmat_fwd
 
 
 def jaccard(X, Y, min_overlap=None, seqlet_neighbors=None, func=np.ceil, 
@@ -173,7 +162,10 @@ def pairwise_jaccard(X, k):
 					min_sum += xi * sign
 					max_sum += xj 
 
-			jaccard_[j] = min_sum / max_sum
+			if max_sum > 0.0:
+				jaccard_[j] = min_sum / max_sum
+			else:
+				jaccard_[j] = 0.0
 
 		idxs = np.argsort(-jaccard_, kind='mergesort')[:k]
 
@@ -212,7 +204,10 @@ def _jaccard(X, Y, neighbors, scores):
 							min_sum += y * sign
 							max_sum += x
 
-				scores[l, i, idx] = min_sum / max_sum
+				if max_sum > 0.0:
+					scores[l, i, idx] = min_sum / max_sum
+				else:
+					scores[l, i, idx] = 0.0
 
 
 
@@ -234,8 +229,13 @@ def pearson_correlation(X, Y, min_overlap=None, func=np.ceil):
 	for idx in range(len_output):
 		Y_ = Y[:, idx:idx+d]
 
-		scores_ = np.dot((X / np.linalg.norm(X)).ravel(),
-				  (Y_ / np.linalg.norm(Y_)).ravel()) 
+		x_norm = np.linalg.norm(X)
+		y_norm = np.linalg.norm(Y_)
+		if x_norm == 0 or y_norm == 0:
+			scores_ = 0.0
+		else:
+			scores_ = np.dot((X / x_norm).ravel(),
+					  (Y_ / y_norm).ravel()) 
 		scores_ = np.nan_to_num(scores_)
 		scores[:,idx] = scores_
 

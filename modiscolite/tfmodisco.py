@@ -15,6 +15,79 @@ from . import extract_seqlets
 from . import core
 from . import util
 from . import cluster
+from . import rna
+
+
+def _standardize_input_shapes(one_hot, hypothetical_contribs):
+	one_hot = np.asarray(one_hot)
+	hypothetical_contribs = np.asarray(hypothetical_contribs)
+
+	if one_hot.ndim != 3:
+		raise ValueError("one_hot must be a 3D tensor with 4 or 6 sequence channels.")
+	if hypothetical_contribs.ndim != 3:
+		raise ValueError("hypothetical_contribs must be a 3D tensor with 4 channels.")
+	if one_hot.shape[0] != hypothetical_contribs.shape[0]:
+		raise ValueError(
+			"one_hot and hypothetical_contribs must have the same number of examples."
+		)
+
+	length_first = (
+		one_hot.shape[2] in (4, 6) and
+		hypothetical_contribs.shape[2] == 4 and
+		one_hot.shape[1] == hypothetical_contribs.shape[1]
+	)
+	channel_first = (
+		one_hot.shape[1] in (4, 6) and
+		hypothetical_contribs.shape[1] == 4 and
+		one_hot.shape[2] == hypothetical_contribs.shape[2]
+	)
+
+	if length_first and channel_first:
+		raise ValueError(
+			"Ambiguous input shape: both axes look like sequence channels. "
+			"Use non-ambiguous N x L x C or N x C x L tensors."
+		)
+	if length_first:
+		return one_hot, hypothetical_contribs
+	if channel_first:
+		return one_hot.transpose(0, 2, 1), hypothetical_contribs.transpose(0, 2, 1)
+
+	raise ValueError(
+		"Incompatible input shapes. Sequence must be N x L x 4/6 or N x 4/6 x L; "
+		"attributions must be N x L x 4 or N x 4 x L."
+	)
+
+
+def _prepare_inputs(one_hot, hypothetical_contribs, sequence_mask=None, region="all"):
+	sequence_features, hypothetical_contribs = _standardize_input_shapes(
+		one_hot, hypothetical_contribs)
+	region = rna.normalize_region(region)
+
+	if not np.all(np.isfinite(sequence_features)):
+		raise ValueError("one_hot contains non-finite values.")
+	if not np.all(np.isfinite(hypothetical_contribs)):
+		raise ValueError("hypothetical_contribs contains non-finite values.")
+
+	padding_mask = rna.infer_padding_mask(
+		sequence=sequence_features, sequence_mask=sequence_mask)
+	region_mask, region_metadata = rna.infer_region_mask(
+		sequence=sequence_features, padding_mask=padding_mask, region=region)
+	position_mask = padding_mask & region_mask
+
+	if not np.any(position_mask):
+		raise ValueError(
+			"No valid positions remain after applying padding and region masks."
+		)
+
+	return (
+		sequence_features[:, :, :4].astype("float32", copy=False),
+		hypothetical_contribs.astype("float32", copy=False),
+		sequence_features.astype("float32", copy=False),
+		position_mask,
+		padding_mask,
+		region,
+		region_metadata,
+	)
 
 def _density_adaptation(affmat_nn, seqlet_neighbors, tsne_perplexity):
 	eps = 0.0000001
@@ -276,13 +349,23 @@ def TFMoDISco(one_hot, hypothetical_contribs, sliding_window_size=21,
 	prob_and_pertrack_sim_dealbreaker_thresholds=[(0.4, 0.75), (0.2,0.8), (0.1, 0.85), (0.0,0.9)],
 	subcluster_perplexity=50, merging_max_seqlets_subsample=1000,
 	final_min_cluster_size=20, min_ic_in_window=0.6, min_ic_windowsize=6,
-	ppm_pseudocount=0.001, verbose=False):
+	ppm_pseudocount=0.001, sequence_mask=None, region="all", verbose=False):
+
+	(one_hot, hypothetical_contribs, sequence_features, position_mask,
+		padding_mask, region, region_metadata) = _prepare_inputs(
+			one_hot=one_hot, hypothetical_contribs=hypothetical_contribs,
+			sequence_mask=sequence_mask, region=region)
 
 	contrib_scores = np.multiply(one_hot, hypothetical_contribs)
 
 	track_set = core.TrackSet(one_hot=one_hot, 
 		contrib_scores=contrib_scores,
-		hypothetical_contribs=hypothetical_contribs)
+		hypothetical_contribs=hypothetical_contribs,
+		position_mask=position_mask,
+		sequence_features=sequence_features,
+		padding_mask=padding_mask,
+		region=region,
+		region_metadata=region_metadata)
 
 	seqlet_coords, threshold = extract_seqlets.extract_seqlets(
 		attribution_scores=contrib_scores.sum(axis=2),
@@ -292,14 +375,16 @@ def TFMoDISco(one_hot, hypothetical_contribs, sliding_window_size=21,
 		target_fdr=target_seqlet_fdr,
 		min_passing_windows_frac=min_passing_windows_frac,
 		max_passing_windows_frac=max_passing_windows_frac,
-		weak_threshold_for_counting_sign=weak_threshold_for_counting_sign) 
+		weak_threshold_for_counting_sign=weak_threshold_for_counting_sign,
+		position_mask=position_mask) 
 
 	seqlets = track_set.create_seqlets(seqlet_coords) 
 
 	pos_seqlets, neg_seqlets = [], []
 	for seqlet in seqlets:
 		flank = int(0.5*(len(seqlet)-sliding_window_size))
-		attr = np.sum(seqlet.contrib_scores[flank:-flank])
+		core_end = len(seqlet) - flank if flank > 0 else len(seqlet)
+		attr = np.sum(seqlet.contrib_scores[flank:core_end])
 
 		if attr > threshold:
 			pos_seqlets.append(seqlet)
