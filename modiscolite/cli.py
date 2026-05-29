@@ -371,7 +371,9 @@ def report_fancy(
     n_footprints,
 ):
     """Generate the self-contained fancy HTML motif report."""
-    modiscolite.fancy_report.generate_fancy_report(
+    from modiscolite import fancy_report
+
+    fancy_report.generate_fancy_report(
         h5_path=h5_path,
         meme_db=meme_db,
         output=output,
