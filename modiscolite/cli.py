@@ -281,6 +281,112 @@ def report(
 
 
 @cli.command(
+    "report-fancy",
+    help="Create a self-contained interactive HTML/TSV report with embedded logos and TOMTOM-lite annotations.",
+)
+@click.option(
+    "-i",
+    "--h5py",
+    "--h5",
+    "h5_path",
+    type=click.Path(exists=True),
+    required=True,
+    help="HDF5 file containing the output from modiscolite.",
+)
+@click.option(
+    "-m",
+    "--meme-db",
+    type=click.Path(exists=True),
+    required=True,
+    help="MEME motif database used for TOMTOM-lite annotation.",
+)
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(dir_okay=False),
+    required=True,
+    help="Output HTML report path. A TSV summary is written beside it.",
+)
+@click.option(
+    "--logos-dir",
+    type=click.Path(file_okay=False),
+    default=None,
+    help="Directory for generated logo PNGs. Defaults to <output_without_suffix>_logos.",
+)
+@click.option(
+    "--force-logos",
+    is_flag=True,
+    help="Delete and regenerate --logos-dir before building the report.",
+)
+@click.option(
+    "-n",
+    "--top-n-matches",
+    type=int,
+    default=5,
+    show_default=True,
+    help="Number of TOMTOM-lite matches to retrieve per pattern.",
+)
+@click.option(
+    "--trim-threshold",
+    type=float,
+    default=0.3,
+    show_default=True,
+    help="CWM trimming threshold for logo generation and TOMTOM-lite.",
+)
+@click.option(
+    "--trim-min-length",
+    type=int,
+    default=3,
+    show_default=True,
+    help="Minimum trimmed CWM length for TOMTOM-lite when supported by the installed API.",
+)
+@click.option(
+    "--title",
+    default="TF-MoDISco Report",
+    show_default=True,
+    help="Report title shown in the page header.",
+)
+@click.option(
+    "--subtitle",
+    default=None,
+    help="Optional subtitle shown under the page header.",
+)
+@click.option(
+    "--n-footprints",
+    type=int,
+    default=None,
+    help="Optional footprint count for the first header statistic.",
+)
+def report_fancy(
+    h5_path,
+    meme_db,
+    output,
+    logos_dir,
+    force_logos,
+    top_n_matches,
+    trim_threshold,
+    trim_min_length,
+    title,
+    subtitle,
+    n_footprints,
+):
+    """Generate the self-contained fancy HTML motif report."""
+    modiscolite.fancy_report.generate_fancy_report(
+        h5_path=h5_path,
+        meme_db=meme_db,
+        output=output,
+        logos_dir=logos_dir,
+        force_logos=force_logos,
+        top_n_matches=top_n_matches,
+        trim_threshold=trim_threshold,
+        trim_min_length=trim_min_length,
+        title=title,
+        subtitle=subtitle,
+        n_footprints=n_footprints,
+    )
+
+
+@cli.command(
     help="Create an HTML report (logos + optional TOMTOM tables) from an HDF5 results file."
 )
 @click.option(

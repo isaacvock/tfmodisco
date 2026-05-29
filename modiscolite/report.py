@@ -152,10 +152,12 @@ def tomtomlite_dataframe(
 	meme_motif_db: Union[os.PathLike, None],
 	pattern_groups: List[str], 
 	top_n_matches=3, 
-	trim_threshold=0.3):
+	trim_threshold=0.3,
+	trim_min_length=None):
 	"""Use tomtom-lite to match patterns to a motif database."""
 
 	tomtom_results = {}
+	min_length = None if trim_min_length is None else int(trim_min_length)
 
 	for i in range(top_n_matches):
 		tomtom_results[f'match{i}'] = []
@@ -178,7 +180,24 @@ def tomtomlite_dataframe(
 				trim_thresh = np.max(score) * trim_threshold  # Cut off anything less than 30% of max score
 				pass_inds = np.where(score >= trim_thresh)[0]
 				
-				ppm = ppm[np.min(pass_inds): np.max(pass_inds) + 1]
+				if len(pass_inds) == 0:
+					start, end = 0, len(score)
+				else:
+					start, end = int(np.min(pass_inds)), int(np.max(pass_inds) + 1)
+
+				if min_length is not None and min_length > 0:
+					extra = min_length - (end - start)
+					if extra > 0:
+						left_extra = extra // 2
+						right_extra = extra - left_extra
+						start = max(0, start - left_extra)
+						end = min(len(score), end + right_extra)
+						shortfall = min_length - (end - start)
+						if shortfall > 0:
+							start = max(0, start - shortfall)
+							end = min(len(score), end + shortfall)
+
+				ppm = ppm[start:end]
 				ppms.append(ppm.T)
 
 	target_db = read_meme(meme_motif_db)

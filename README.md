@@ -90,6 +90,11 @@ Each pattern produced by TF-MoDISco is compared against the database of motifs u
 
 The report details each pattern, including seqlet importance and spatial distributions, example seqlets at different importance levels, and motif visualizations.
 
+To generate a self-contained HTML report with embedded MoDISco logos, TOMTOM-lite annotations, motif match logos, and a TSV summary, use:
+```sh
+modisco report-fancy -i modisco_results.h5 -m motifs.txt -o modisco_report.html
+```
+
 For users who need the legacy report format use:
 ```sh
 modisco report-simple -i modisco_results.h5 -o simple_report/ -s simple_report/ -m motifs.txt
