@@ -94,6 +94,7 @@ To generate a self-contained HTML report with embedded MoDISco logos, TOMTOM-lit
 ```sh
 modisco report-fancy -i modisco_results.h5 -m motifs.txt -o modisco_report.html
 ```
+This also writes reusable pattern logo PNGs to `modisco_report_logos/` by default. Use `--logos-dir` to choose a different location, or `--force-logos` to regenerate an existing logo directory.
 
 For users who need the legacy report format use:
 ```sh

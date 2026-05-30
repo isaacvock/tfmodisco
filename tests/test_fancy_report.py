@@ -6,9 +6,11 @@ from click.testing import CliRunner
 from modiscolite.cli import cli
 from modiscolite.fancy_report import (
     build_tsv,
+    default_logos_dir,
     load_h5_patterns,
     normalize_logo_layout,
     summarize_logo_layout,
+    write_embedded_logo_files,
 )
 
 
@@ -85,6 +87,25 @@ def test_normalize_logo_layout(tmp_path):
     assert (logos_dir / "pos_patterns.pattern_0" / "trimmed_cwm_fwd_logo.png").read_bytes() == b"fwd"
     assert (logos_dir / "pos_patterns.pattern_0" / "trimmed_cwm_rev_logo.png").read_bytes() == b"rev"
     assert summary["missing_required"] == {}
+
+
+def test_write_embedded_logo_files_and_default_dir(tmp_path):
+    output = tmp_path / "report.html"
+    logos_dir = default_logos_dir(output)
+    patterns = [{"tag": "pos_patterns.pattern_0"}]
+    logos = {
+        "pos_patterns.pattern_0": {
+            "cwm_fwd": "",
+            "cwm_rev": "",
+            "ic_ppm": "aWNwcG0=",
+        }
+    }
+
+    count = write_embedded_logo_files(logos_dir, patterns, logos)
+
+    assert logos_dir == tmp_path / "report_logos"
+    assert count == 1
+    assert (logos_dir / "pos_patterns.pattern_0" / "ic_ppm_logo.png").read_bytes() == b"icppm"
 
 
 def test_report_fancy_cli_help():

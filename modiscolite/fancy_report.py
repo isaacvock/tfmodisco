@@ -986,6 +986,35 @@ def load_logos(logos_dir: os.PathLike, patterns: List[Dict]) -> Dict[str, Dict[s
     return logos
 
 
+def write_embedded_logo_files(
+    logos_dir: os.PathLike,
+    patterns: List[Dict],
+    logos: Dict[str, Dict[str, str]],
+) -> int:
+    """Write any embedded-only pattern logos into the report logo directory."""
+    logos_path = Path(logos_dir)
+    n_written = 0
+    for pattern in patterns:
+        tag = pattern["tag"]
+        pattern_dir = logos_path / tag
+        pattern_dir.mkdir(parents=True, exist_ok=True)
+        for key, filename in LOGO_FILES.items():
+            output_path = pattern_dir / filename
+            if output_path.exists():
+                continue
+            encoded = logos.get(tag, {}).get(key, "")
+            if not encoded:
+                continue
+            if encoded.startswith("data:image"):
+                encoded = encoded.split(",", 1)[-1]
+            try:
+                output_path.write_bytes(base64.b64decode(encoded))
+            except (OSError, ValueError):
+                continue
+            n_written += 1
+    return n_written
+
+
 def normalize_meme_motifs(raw_motifs) -> Dict[str, np.ndarray]:
     """Normalize parser-specific MEME motif objects to name -> ``(L, 4)`` PPM."""
     normalized = {}
@@ -1894,6 +1923,9 @@ def generate_fancy_report(
 
     print("[4/5] Loading logos and rendering motif logos...")
     logos = load_logos(logo_path, patterns)
+    n_written_embedded_logos = write_embedded_logo_files(logo_path, patterns, logos)
+    if n_written_embedded_logos:
+        print("  Wrote embedded-only logo files: {}".format(n_written_embedded_logos))
     match_logos = load_match_logos(meme_db, tomtom_df, top_n_matches)
 
     print("[5/5] Building HTML and TSV report...")
@@ -1916,6 +1948,7 @@ def generate_fancy_report(
     tsv_path = output_path.with_suffix(".tsv")
     tsv_df = build_tsv(patterns, tomtom_df, top_n_matches)
     tsv_df.to_csv(tsv_path, sep="\t", index=False)
+    final_logo_summary = summarize_logo_layout(logo_path, pattern_tags)
 
     n_cards = html.count('class="pattern-card"')
     n_b64 = html.count("data:image/png;base64,")
@@ -1923,6 +1956,11 @@ def generate_fancy_report(
     print("  HTML: {} ({:.1f} MB)".format(output_path, size_mb))
     print("  TSV : {} ({} rows x {} cols)".format(
         tsv_path, len(tsv_df), len(tsv_df.columns)
+    ))
+    print("  Logos: {} ({} pattern dirs, {} files)".format(
+        logo_path,
+        len(final_logo_summary["pattern_dirs"]),
+        final_logo_summary["total_files"],
     ))
     print()
     print("Sanity check:")
@@ -1936,6 +1974,7 @@ def generate_fancy_report(
         "html": output_path,
         "tsv": tsv_path,
         "logos_dir": logo_path,
+        "logo_files": final_logo_summary["total_files"],
         "patterns": len(patterns),
         "cards": n_cards,
         "base64_images": n_b64,
