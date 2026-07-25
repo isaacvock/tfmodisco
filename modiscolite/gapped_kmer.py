@@ -8,6 +8,8 @@ import numpy as np
 from numba import njit, prange
 import numba
 
+from .progress import ensure_progress
+
 key_type = numba.types.int64
 value_type = numba.types.float64
 
@@ -101,27 +103,43 @@ def _extract_gkmers(X, min_k, max_k, max_gap, max_len, max_entries):
 	return keys, scores
 
 def _seqlet_to_gkmers(seqlets, topn, min_k, max_k, max_gap, max_len, 
-	max_entries, take_fwd, sign):
+	max_entries, take_fwd, sign, progress=None):
 
+	progress = ensure_progress(progress)
 	Xs = []
-	for seqlet in seqlets:
-		onehot = seqlet.sequence
-		contrib_scores = seqlet.hypothetical_contribs*onehot*sign
+	with progress.task(
+		"Preparing gapped-kmer inputs",
+		total=len(seqlets),
+		unit="seqlet",
+	) as task:
+		for seqlet in seqlets:
+			onehot = seqlet.sequence
+			contrib_scores = seqlet.hypothetical_contribs*onehot*sign
 
-		#get the top n positiosn
-		per_pos_imp = np.sum(contrib_scores, axis=-1)
-		per_pos_bases = np.argmax(onehot, axis=-1)
+			#get the top n positiosn
+			per_pos_imp = np.sum(contrib_scores, axis=-1)
+			per_pos_bases = np.argmax(onehot, axis=-1)
 
-		#get the top n positions
-		topn_pos = np.argsort(-per_pos_imp)[:topn]
+			#get the top n positions
+			topn_pos = np.argsort(-per_pos_imp)[:topn]
 
-		X_ = sorted([(pos, per_pos_bases[pos], per_pos_imp[pos]) for pos in topn_pos], key=lambda x:x[0])
-		X_ = np.array(X_)
-		Xs.append(X_)
+			X_ = sorted([(pos, per_pos_bases[pos], per_pos_imp[pos]) for pos in topn_pos], key=lambda x:x[0])
+			X_ = np.array(X_)
+			Xs.append(X_)
+			task.advance()
 
 	X = np.array(Xs)
-	keys, scores = _extract_gkmers(X, min_k=min_k, max_k=max_k, 
-		max_gap=max_gap, max_len=max_len, max_entries=max_entries)
+	with progress.task(
+		"Gapped-kmer embedding",
+		detail=(
+			"{:,} seqlets; compiled Numba stage with no internal percentage"
+			.format(len(seqlets))
+		),
+	) as task:
+		keys, scores = _extract_gkmers(
+			X, min_k=min_k, max_k=max_k, max_gap=max_gap,
+			max_len=max_len, max_entries=max_entries)
+		task.set_summary("{:,} seqlets embedded".format(len(seqlets)))
 	
 	row_idxs = np.repeat(range(keys.shape[0]), keys.shape[1])
 	csr_mat = scipy.sparse.csr_matrix((scores.flatten(), 

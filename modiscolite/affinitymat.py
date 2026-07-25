@@ -15,6 +15,7 @@ from numba import prange
 
 from . import util
 from . import gapped_kmer
+from .progress import ensure_progress
 
 
 @njit('float64(float64[:], int64[:], int64[:], float64[:], int64[:], int64[:], int64, int64)')
@@ -66,21 +67,37 @@ def _sparse_mm_dot(X_data, X_indices, X_indptr, Y_data, Y_indices, Y_indptr, k):
 
 def cosine_similarity_from_seqlets(seqlets, n_neighbors, sign, topn=20, 
 	min_k=4, max_k=6, max_gap=15, max_len=15, max_entries=500, 
-	alphabet_size=4):
+	alphabet_size=4, progress=None):
 
+	progress = ensure_progress(progress)
 	X_fwd = gapped_kmer._seqlet_to_gkmers(seqlets, topn, 
-		min_k, max_k, max_gap, max_len, max_entries, True, sign)
+		min_k, max_k, max_gap, max_len, max_entries, True, sign,
+		progress=progress)
 
 	X = sklearn.preprocessing.normalize(X_fwd, norm='l2', axis=1)
 
 	n, d = X.shape
 	k = min(n_neighbors+1, n)
-	return _sparse_mm_dot(X.data, X.indices, X.indptr, X.data, X.indices, X.indptr, k)
+	with progress.task(
+		"Coarse similarity",
+		detail=(
+			"{:,} seqlets • ~{:,} directed pair comparisons • "
+			"compiled Numba stage with no internal percentage"
+		).format(n, n * n),
+	) as task:
+		result = _sparse_mm_dot(
+			X.data, X.indices, X.indptr,
+			X.data, X.indices, X.indptr, k)
+		task.set_summary(
+			"{:,} seqlets • up to {:,} neighbors each".format(n, k)
+		)
+	return result
 
 
 def jaccard_from_seqlets(seqlets, min_overlap, filter_seqlets=None, 
-	seqlet_neighbors=None):
+	seqlet_neighbors=None, progress=None):
 
+	progress = ensure_progress(progress)
 	all_fwd_data, _ = util.get_2d_data_from_patterns(seqlets)
 
 	if filter_seqlets is None:
@@ -94,10 +111,23 @@ def jaccard_from_seqlets(seqlets, min_overlap, filter_seqlets=None,
 							for x in seqlets] 
 
 	#apply the cross metric
-	affmat_fwd = jaccard(seqlet_neighbors=seqlet_neighbors, 
-		X=filters_all_fwd_data,
-		Y=all_fwd_data, min_overlap=min_overlap, func=int, 
-		return_sparse=True)
+	n_rows = len(seqlets)
+	n_neighbors = (
+		len(seqlet_neighbors[0]) if len(seqlet_neighbors) > 0 else 0)
+	with progress.task(
+		"Fine Jaccard similarity",
+		detail=(
+			"{:,} seqlets × up to {:,} neighbors • "
+			"compiled Numba stage with no internal percentage"
+		).format(n_rows, n_neighbors),
+	) as task:
+		affmat_fwd = jaccard(seqlet_neighbors=seqlet_neighbors, 
+			X=filters_all_fwd_data,
+			Y=all_fwd_data, min_overlap=min_overlap, func=int, 
+			return_sparse=True)
+		task.set_summary(
+			"{:,} seqlet rows compared".format(n_rows)
+		)
 
 	return affmat_fwd
 

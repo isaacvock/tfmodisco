@@ -10,6 +10,7 @@ import scipy.sparse
 from . import affinitymat
 from . import cluster
 from . import util
+from .progress import ensure_progress
 
 from collections import OrderedDict
 
@@ -146,16 +147,30 @@ class SeqletSet():
 		self.subclusters = None
 		self.subcluster_to_subpattern = None
 
-	def compute_subpatterns(self, perplexity, n_seeds, n_iterations=-1):
+	def compute_subpatterns(self, perplexity, n_seeds, n_iterations=-1,
+		progress=None):
 		#this method assumes all the seqlets have been expanded so they
 		# all start at 0
+		progress = ensure_progress(progress)
 		X = util.get_2d_data_from_patterns(self.seqlets)[0]
 		X = X.reshape(len(X), -1)
 	
 		n = len(X)
 		n_neighb = min(int(perplexity*3 + 2), len(X))
 
-		affmat_nn, seqlet_neighbors = affinitymat.pairwise_jaccard(X, n_neighb)
+		with progress.task(
+			"Pairwise subclustering similarity",
+			detail=(
+				"{:,} seqlets • ~{:,} pair comparisons • "
+				"compiled Numba stage with no internal percentage"
+			).format(n, n * n),
+		) as task:
+			affmat_nn, seqlet_neighbors = affinitymat.pairwise_jaccard(
+				X, n_neighb)
+			task.set_summary(
+				"{:,} seqlets • up to {:,} neighbors each".format(
+					n, n_neighb)
+			)
 
 		distmat_nn = np.log((1.0/(0.5*np.maximum(affmat_nn, 0.0000001)))-1)
 		distmat_nn = np.maximum(distmat_nn, 0.0) #eliminate tiny neg floats
@@ -170,15 +185,17 @@ class SeqletSet():
 		distmat_sp.sort_indices()
 
 		#do density adaptation
-		sp_density_adapted_affmat = affinitymat.NNTsneConditionalProbs(
-				perplexity=perplexity)(affmat_nn, seqlet_neighbors)
+		with progress.task("Adapting subclustering density"):
+			sp_density_adapted_affmat = affinitymat.NNTsneConditionalProbs(
+					perplexity=perplexity)(affmat_nn, seqlet_neighbors)
 
-		sp_density_adapted_affmat += sp_density_adapted_affmat.T
-		sp_density_adapted_affmat /= np.sum(sp_density_adapted_affmat.data)
+			sp_density_adapted_affmat += sp_density_adapted_affmat.T
+			sp_density_adapted_affmat /= np.sum(sp_density_adapted_affmat.data)
 
 		#Do Leiden clustering
 		self.subclusters = cluster.LeidenCluster(sp_density_adapted_affmat,
-			n_seeds=n_seeds, n_leiden_iterations=n_iterations) 
+			n_seeds=n_seeds, n_leiden_iterations=n_iterations,
+			progress=progress, task_name="Subpattern Leiden clustering") 
 
 		#this method assumes all the seqlets have been expanded so they
 		# all start at 0

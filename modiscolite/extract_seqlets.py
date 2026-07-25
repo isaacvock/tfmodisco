@@ -6,6 +6,7 @@ import numpy as np
 
 from . import core
 from . import rna
+from .progress import ensure_progress
 from sklearn.isotonic import IsotonicRegression
 
 def _bin_mode(values, bins=1000):
@@ -64,7 +65,8 @@ def _laplacian_null(track, window_size, num_to_samp, random_seed=1234,
 	return sampled_vals[sampled_vals >= 0], sampled_vals[sampled_vals < 0]
 
 
-def _iterative_extract_seqlets(score_track, window_size, flank, suppress):
+def _iterative_extract_seqlets(score_track, window_size, flank, suppress,
+	progress_task=None):
 	n, d = score_track.shape
 	seqlets = []
 	for example_idx, single_score_track in enumerate(score_track):
@@ -89,6 +91,9 @@ def _iterative_extract_seqlets(score_track, window_size, flank, suppress):
 			l_idx = int(max(np.floor(argmax+0.5-suppress),0))
 			r_idx = int(min(np.ceil(argmax+0.5+suppress), d))
 			single_score_track[l_idx:r_idx] = -np.inf 
+
+		if progress_task is not None:
+			progress_task.advance()
 
 	return seqlets
 
@@ -171,34 +176,47 @@ def _refine_thresholds(vals, pos_threshold, neg_threshold,
 
 def extract_seqlets(attribution_scores, window_size, flank, suppress, 
 	target_fdr, min_passing_windows_frac, max_passing_windows_frac, 
-	weak_threshold_for_counting_sign, position_mask=None):
+	weak_threshold_for_counting_sign, position_mask=None, progress=None):
 
+	progress = ensure_progress(progress)
 	window_mask = None
 	if position_mask is not None:
 		window_mask = rna.candidate_window_mask(
-			position_mask=position_mask, window_size=window_size, flank=flank)
+			position_mask=position_mask, window_size=window_size, flank=flank,
+			progress=progress)
 		if not np.any(window_mask):
 			raise ValueError(
 				"No valid seqlet windows remain after applying padding/region masks."
 			)
 
-	pos_values, neg_values, smoothed_tracks = _smooth_and_split(
-		attribution_scores, window_size, window_mask=window_mask)
+	with progress.task("Smoothing attribution tracks") as task:
+		pos_values, neg_values, smoothed_tracks = _smooth_and_split(
+			attribution_scores, window_size, window_mask=window_mask)
+		task.set_summary(
+			"{:,} positive • {:,} negative windows".format(
+				len(pos_values), len(neg_values))
+		)
 
-	pos_null_values, neg_null_values = _laplacian_null(track=smoothed_tracks, 
-		window_size=window_size, num_to_samp=10000, window_mask=window_mask)
+	with progress.task("Estimating seqlet thresholds") as task:
+		pos_null_values, neg_null_values = _laplacian_null(
+			track=smoothed_tracks, window_size=window_size, num_to_samp=10000,
+			window_mask=window_mask)
 
-	pos_threshold = _isotonic_thresholds(pos_values, pos_null_values, 
-		increasing=True, target_fdr=target_fdr)
-	neg_threshold = _isotonic_thresholds(neg_values, neg_null_values,
-		increasing=False, target_fdr=target_fdr)
+		pos_threshold = _isotonic_thresholds(pos_values, pos_null_values, 
+			increasing=True, target_fdr=target_fdr)
+		neg_threshold = _isotonic_thresholds(neg_values, neg_null_values,
+			increasing=False, target_fdr=target_fdr)
 
-	pos_threshold, neg_threshold = _refine_thresholds(
-		  vals=np.concatenate([pos_values, neg_values], axis=0),
-		  pos_threshold=pos_threshold,
-		  neg_threshold=neg_threshold,
-		  min_passing_windows_frac=min_passing_windows_frac,
-		  max_passing_windows_frac=max_passing_windows_frac) 
+		pos_threshold, neg_threshold = _refine_thresholds(
+			  vals=np.concatenate([pos_values, neg_values], axis=0),
+			  pos_threshold=pos_threshold,
+			  neg_threshold=neg_threshold,
+			  min_passing_windows_frac=min_passing_windows_frac,
+			  max_passing_windows_frac=max_passing_windows_frac) 
+		task.set_summary(
+			"positive={:.5g} • negative={:.5g}".format(
+				pos_threshold, neg_threshold)
+		)
 
 	distribution_values = (
 		smoothed_tracks[window_mask] if window_mask is not None
@@ -223,10 +241,19 @@ def extract_seqlets(attribution_scores, window_size, flank, suppress,
 		smoothed_tracks[:, :flank] = -np.inf
 		smoothed_tracks[:, -flank:] = -np.inf
 
-	seqlets = _iterative_extract_seqlets(score_track=smoothed_tracks,
-		window_size=window_size,
-		flank=flank,
-		suppress=suppress)
+	with progress.task(
+		"Extracting seqlets",
+		total=smoothed_tracks.shape[0],
+		unit="RNA",
+	) as task:
+		seqlets = _iterative_extract_seqlets(
+			score_track=smoothed_tracks,
+			window_size=window_size,
+			flank=flank,
+			suppress=suppress,
+			progress_task=task,
+		)
+		task.set_summary("{:,} candidates".format(len(seqlets)))
 
 	#find the weakest transformed threshold used across all tasks
 	weak_thresh = min(min(transformed_pos_threshold, 
@@ -234,5 +261,10 @@ def extract_seqlets(attribution_scores, window_size, flank, suppress,
 			weak_threshold_for_counting_sign)
 
 	threshold = distribution[int(weak_thresh * len(distribution))]
+	progress.verbose_note(
+		"Transformed thresholds: positive={:.6f} • negative={:.6f} • "
+		"classification threshold={:.5g}".format(
+			transformed_pos_threshold, transformed_neg_threshold, threshold)
+	)
 
 	return seqlets, threshold

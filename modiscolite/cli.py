@@ -9,6 +9,7 @@ import h5py
 import numpy as np
 
 import modiscolite
+from modiscolite.progress import ProgressReporter
 from modiscolite.util import MemeDataType
 
 
@@ -142,7 +143,23 @@ def cli() -> None:
         "'error' fails strictly."
     ),
 )
-@click.option("-v", "--verbose", is_flag=True)
+@click.option(
+    "--progress",
+    "progress_mode",
+    type=click.Choice(["auto", "bar", "log", "off"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help=(
+        "Progress display mode. 'auto' uses terminal progress bars when "
+        "interactive and timestamped status lines in redirected job logs."
+    ),
+)
+@click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    help="Show additional diagnostics alongside progress output.",
+)
 def motifs(
     seq_path: str,
     attr_path: str,
@@ -158,6 +175,7 @@ def motifs(
     output: str,
     region: str,
     missing_cds: str,
+    progress_mode: str,
     verbose: bool,
 ):
     """Run RNA-MoDISco and extract motifs."""
@@ -168,32 +186,64 @@ def motifs(
             "the search to an inferred RNA region."
         )
 
-    if h5_path:
-        f = h5py.File(h5_path, "r")
-        try:
-            attributions = f["hyp_scores"][..., :]
-            sequences = f["input_seqs"][..., :]
-        except KeyError:
-            attributions = f["shap"]["seq"][..., :, :].transpose(0, 2, 1)
-            sequences = f["raw"]["seq"][..., :, :].transpose(0, 2, 1)
-        f.close()
-    else:
-        seq_path = Path(seq_path)
-        attr_path = Path(attr_path)
-        sequences = (
-            np.load(seq_path)["arr_0"]
-            if seq_path.suffix == ".npz"
-            else np.load(seq_path)
+    progress = ProgressReporter(
+        mode=progress_mode,
+        verbose=verbose,
+        stream=click.get_text_stream("stderr"),
+    )
+    progress.header("RNA-MoDISco")
+
+    with progress.task("Loading input arrays") as task:
+        if h5_path:
+            with h5py.File(h5_path, "r") as f:
+                try:
+                    attributions = f["hyp_scores"][..., :]
+                    sequences = f["input_seqs"][..., :]
+                except KeyError:
+                    attributions = (
+                        f["shap"]["seq"][..., :, :].transpose(0, 2, 1)
+                    )
+                    sequences = (
+                        f["raw"]["seq"][..., :, :].transpose(0, 2, 1)
+                    )
+        else:
+            seq_path = Path(seq_path)
+            attr_path = Path(attr_path)
+            sequences = (
+                np.load(seq_path)["arr_0"]
+                if seq_path.suffix == ".npz"
+                else np.load(seq_path)
+            )
+            attributions = (
+                np.load(attr_path)["arr_0"]
+                if attr_path.suffix == ".npz"
+                else np.load(attr_path)
+            )
+        task.set_summary(
+            "sequence shape={} • attribution shape={}".format(
+                sequences.shape, attributions.shape)
         )
-        attributions = (
-            np.load(attr_path)["arr_0"]
-            if attr_path.suffix == ".npz"
-            else np.load(attr_path)
+    progress.verbose_note(
+        "Sequence dtype={} • attribution dtype={} • source={}".format(
+            sequences.dtype,
+            attributions.dtype,
+            h5_path if h5_path else "{}, {}".format(seq_path, attr_path),
         )
+    )
 
     standardized_sequences, _ = modiscolite.tfmodisco._standardize_input_shapes(
         sequences, attributions)
     sequence_length = standardized_sequences.shape[1]
+    progress.note(
+        "Input: {:,} RNAs × {:,} nt • region={} • "
+        "max seqlets/sign={:,} • Leiden runs={:,}".format(
+            standardized_sequences.shape[0],
+            sequence_length,
+            region.lower(),
+            max_seqlets,
+            n_leiden,
+        )
+    )
 
     pos_patterns, neg_patterns = modiscolite.tfmodisco.TFMoDISco(
         one_hot=sequences.astype("float32"),
@@ -209,9 +259,23 @@ def motifs(
         region=region,
         missing_cds=missing_cds,
         verbose=verbose,
+        progress=progress,
     )
-    modiscolite.io.save_hdf5(output, pos_patterns, neg_patterns,
-                             sequence_length, region=region)
+    modiscolite.io.save_hdf5(
+        output,
+        pos_patterns,
+        neg_patterns,
+        sequence_length,
+        region=region,
+        progress=progress,
+    )
+
+    n_pos_patterns = 0 if pos_patterns is None else len(pos_patterns)
+    n_neg_patterns = 0 if neg_patterns is None else len(neg_patterns)
+    progress.finish(
+        "{} positive patterns • {} negative patterns • output={}".format(
+            n_pos_patterns, n_neg_patterns, output)
+    )
 
 
 @cli.command(

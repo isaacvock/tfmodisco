@@ -7,6 +7,7 @@ import numpy as np
 from . import affinitymat
 from . import core
 from . import util
+from .progress import ensure_progress
 
 from collections import OrderedDict
 from sklearn.metrics import roc_auc_score
@@ -82,11 +83,14 @@ def _align_patterns(parent_pattern, child_pattern, metric, min_overlap,
 
 def merge_in_seqlets_filledges(parent_pattern, seqlets_to_merge,
 	track_set, metric, min_overlap, transformer='l1', 
-	include_hypothetical=True):
+	include_hypothetical=True, progress_task=None):
 
 	parent_pattern = parent_pattern.copy()
 
 	for seqlet in seqlets_to_merge:
+		if progress_task is not None:
+			progress_task.advance()
+
 		alnmt, _, alnmt_score = _align_patterns(parent_pattern,
 			seqlet, metric, min_overlap, transformer, include_hypothetical)
 		
@@ -156,37 +160,60 @@ def _detect_spurious_merging(patterns, track_set, perplexity,
 	min_in_subcluster, min_overlap, prob_and_pertrack_sim_merge_thresholds,
 	prob_and_pertrack_sim_dealbreaker_thresholds,
 	min_frac, min_num, flank_to_add, window_size, bg_freq,
-	n_seeds, max_seqlets_subsample=1000):
+	n_seeds, max_seqlets_subsample=1000, progress=None):
 
+	progress = ensure_progress(progress)
 	to_return = []
-	for i, pattern in enumerate(patterns):
-		if len(pattern.seqlets) > min_in_subcluster:
-			pattern.compute_subpatterns(perplexity=perplexity, n_seeds=n_seeds)
+	with progress.task(
+		"Examining patterns for spurious merges",
+		total=len(patterns),
+		unit="pattern",
+		record_duration=False,
+	) as task:
+		for i, pattern in enumerate(patterns):
+			if len(pattern.seqlets) > min_in_subcluster:
+				with progress.section(
+					"Splitting pattern {}/{} ({:,} seqlets)".format(
+						i + 1, len(patterns), len(pattern.seqlets))
+				):
+					pattern.compute_subpatterns(
+						perplexity=perplexity, n_seeds=n_seeds,
+						progress=progress)
 
-			subpatterns = pattern.subcluster_to_subpattern.values()
-			refined_subpatterns = SimilarPatternsCollapser(patterns=subpatterns, 
-				track_set=track_set, min_overlap=min_overlap, 
-				prob_and_pertrack_sim_merge_thresholds=prob_and_pertrack_sim_merge_thresholds,
-				prob_and_pertrack_sim_dealbreaker_thresholds=prob_and_pertrack_sim_dealbreaker_thresholds,
-				min_frac=min_frac, min_num=min_num, flank_to_add=flank_to_add, window_size=window_size, 
-				bg_freq=bg_freq, max_seqlets_subsample=max_seqlets_subsample)
+					subpatterns = pattern.subcluster_to_subpattern.values()
+					refined_subpatterns = SimilarPatternsCollapser(
+						patterns=subpatterns, 
+						track_set=track_set, min_overlap=min_overlap, 
+						prob_and_pertrack_sim_merge_thresholds=prob_and_pertrack_sim_merge_thresholds,
+						prob_and_pertrack_sim_dealbreaker_thresholds=prob_and_pertrack_sim_dealbreaker_thresholds,
+						min_frac=min_frac, min_num=min_num,
+						flank_to_add=flank_to_add, window_size=window_size, 
+						bg_freq=bg_freq,
+						max_seqlets_subsample=max_seqlets_subsample,
+						progress=progress,
+						label="Subpattern merging")
 
-			to_return.extend(refined_subpatterns[0]) 
-		else:
-			to_return.append(pattern)
+					to_return.extend(refined_subpatterns[0]) 
+			else:
+				to_return.append(pattern)
+			task.advance()
 	
-	return SimilarPatternsCollapser(patterns=to_return, 
-				track_set=track_set, min_overlap=min_overlap, 
-				prob_and_pertrack_sim_merge_thresholds=prob_and_pertrack_sim_merge_thresholds,
-				prob_and_pertrack_sim_dealbreaker_thresholds=prob_and_pertrack_sim_dealbreaker_thresholds,
-				min_frac=min_frac, min_num=min_num, flank_to_add=flank_to_add, window_size=window_size, 
-				bg_freq=bg_freq, max_seqlets_subsample=max_seqlets_subsample)
+	return SimilarPatternsCollapser(
+		patterns=to_return, 
+		track_set=track_set, min_overlap=min_overlap, 
+		prob_and_pertrack_sim_merge_thresholds=prob_and_pertrack_sim_merge_thresholds,
+		prob_and_pertrack_sim_dealbreaker_thresholds=prob_and_pertrack_sim_dealbreaker_thresholds,
+		min_frac=min_frac, min_num=min_num, flank_to_add=flank_to_add,
+		window_size=window_size, bg_freq=bg_freq,
+		max_seqlets_subsample=max_seqlets_subsample,
+		progress=progress, label="Final pattern merging")
 
 def SimilarPatternsCollapser(patterns, track_set,
 	min_overlap, prob_and_pertrack_sim_merge_thresholds,
 	prob_and_pertrack_sim_dealbreaker_thresholds,
 	min_frac, min_num, flank_to_add, window_size, bg_freq,
-	max_seqlets_subsample=1000):
+	max_seqlets_subsample=1000, progress=None, label="Pattern merging"):
+	progress = ensure_progress(progress)
 	patterns = [x.copy() for x in patterns]
 
 	merge_hierarchy_levels = []        
@@ -203,8 +230,14 @@ def SimilarPatternsCollapser(patterns, track_set,
 	pairwise_sims = np.zeros((len(patterns), len(patterns)))
 
 	#loop until no more patterns get merged
+	merge_pass = 0
 	while merge_occurred_last_iteration:
+		merge_pass += 1
 		merge_occurred_last_iteration = False
+		progress.note(
+			"{} pass {}: evaluating {} patterns".format(
+				label, merge_pass, len(patterns))
+		)
 
 		#Let's subsample 'patterns' to prevent runtime from being too
 		# large in calculating pairwise sims. 
@@ -218,77 +251,83 @@ def SimilarPatternsCollapser(patterns, track_set,
 			subsample_patterns.append(pattern)
 
 		n = len(patterns)
-		for i in range(n):
-			for j in range(n):
+		with progress.task(
+			"{} pair comparisons (pass {})".format(label, merge_pass),
+			total=n * n,
+			unit="pair",
+		) as pair_task:
+			for i in range(n):
+				for j in range(n):
+					pair_task.advance()
 				#Note: I compute both i,j AND j,i because although
 				# the result is the same for the sim, it can be different
 				# for the auroc because a different motif is getting
 				# shifted over.
-				if j == i:
-					pairwise_aurocs[i, j] = 0.5
-					pairwise_sims[i, j] = 1.0
-					continue
+					if j == i:
+						pairwise_aurocs[i, j] = 0.5
+						pairwise_sims[i, j] = 1.0
+						continue
 
-				if pairwise_aurocs[i, j] >= 0: #filled in from previous iter
-					continue 
+					if pairwise_aurocs[i, j] >= 0: #filled in from previous iter
+						continue 
 
-				#Compute best alignment between pattern pair
-				alnmt, _, aligner_sim =\
-					_align_patterns(parent_pattern=patterns[i], 
-						child_pattern=patterns[j], 
-						metric=affinitymat.pearson_correlation, 
-						min_overlap=min_overlap, 
-						include_hypothetical=False,
-						transformer='magnitude') 
+					#Compute best alignment between pattern pair
+					alnmt, _, aligner_sim =\
+						_align_patterns(parent_pattern=patterns[i], 
+							child_pattern=patterns[j], 
+							metric=affinitymat.pearson_correlation, 
+							min_overlap=min_overlap, 
+							include_hypothetical=False,
+							transformer='magnitude') 
 
-				pairwise_sims[i, j] = aligner_sim
+					pairwise_sims[i, j] = aligner_sim
 
-				#get realigned pattern2
-				pattern2_coords = subsample_patterns[j].seqlets
-				#now apply the alignment
-				pattern2_coords = [x.shift(-alnmt) for x in pattern2_coords] 
+					#get realigned pattern2
+					pattern2_coords = subsample_patterns[j].seqlets
+					#now apply the alignment
+					pattern2_coords = [x.shift(-alnmt) for x in pattern2_coords] 
 
-				# Filter out bad seqlets
-				pattern2_coords = [seqlet for seqlet in pattern2_coords 
-					if track_set.is_valid_interval(
-						seqlet.example_idx, seqlet.start, seqlet.end)]
+					# Filter out bad seqlets
+					pattern2_coords = [seqlet for seqlet in pattern2_coords 
+						if track_set.is_valid_interval(
+							seqlet.example_idx, seqlet.start, seqlet.end)]
 
-				if len(pattern2_coords) == 0:
-					pairwise_sims[i, j] = 0.0
-					pairwise_aurocs[i, j] = 0.5
-					continue
+					if len(pattern2_coords) == 0:
+						pairwise_sims[i, j] = 0.0
+						pairwise_aurocs[i, j] = 0.5
+						continue
 
-				pattern2_shifted_seqlets = track_set.create_seqlets(
-					seqlets=pattern2_coords)
+					pattern2_shifted_seqlets = track_set.create_seqlets(
+						seqlets=pattern2_coords)
 
-				pattern1_fwdseqdata, _ =\
-				  util.get_2d_data_from_patterns(subsample_patterns[i].seqlets)
+					pattern1_fwdseqdata, _ =\
+					  util.get_2d_data_from_patterns(subsample_patterns[i].seqlets)
 
-				pattern2_fwdseqdata, _ =\
-				  util.get_2d_data_from_patterns(pattern2_shifted_seqlets)
+					pattern2_fwdseqdata, _ =\
+					  util.get_2d_data_from_patterns(pattern2_shifted_seqlets)
 
-				#Flatten, compute continjacc sim at this alignment
-				flat_pattern1_fwdseqdata = pattern1_fwdseqdata.reshape(
-					(len(pattern1_fwdseqdata), -1))
-				flat_pattern2_fwdseqdata = pattern2_fwdseqdata.reshape(
-					(len(pattern2_fwdseqdata), -1))
+					#Flatten, compute continjacc sim at this alignment
+					flat_pattern1_fwdseqdata = pattern1_fwdseqdata.reshape(
+						(len(pattern1_fwdseqdata), -1))
+					flat_pattern2_fwdseqdata = pattern2_fwdseqdata.reshape(
+						(len(pattern2_fwdseqdata), -1))
 
-				between_pattern_sims = affinitymat.jaccard(
-					flat_pattern1_fwdseqdata[:, :, None], 
-					flat_pattern2_fwdseqdata[:, :, None])[:, :, 0].flatten()
+					between_pattern_sims = affinitymat.jaccard(
+						flat_pattern1_fwdseqdata[:, :, None], 
+						flat_pattern2_fwdseqdata[:, :, None])[:, :, 0].flatten()
 
-				within_pattern1_sims = affinitymat.jaccard(
-					flat_pattern1_fwdseqdata[:, :, None], 
-					flat_pattern1_fwdseqdata[:, :, None])[:, :, 0].flatten()
+					within_pattern1_sims = affinitymat.jaccard(
+						flat_pattern1_fwdseqdata[:, :, None], 
+						flat_pattern1_fwdseqdata[:, :, None])[:, :, 0].flatten()
 
-				auroc = roc_auc_score(
-					y_true=[0 for x in between_pattern_sims]
-						   +[1 for x in within_pattern1_sims],
-					y_score=list(between_pattern_sims)
-							+list(within_pattern1_sims))
+					auroc = roc_auc_score(
+						y_true=[0 for x in between_pattern_sims]
+							   +[1 for x in within_pattern1_sims],
+						y_score=list(between_pattern_sims)
+								+list(within_pattern1_sims))
 
-				#The symmetrization over i,j and j,i is done later
-				pairwise_aurocs[i,j] = auroc
+					#The symmetrization over i,j and j,i is done later
+					pairwise_aurocs[i,j] = auroc
 
 
 		#pairwise_sims is not symmetric; differ based on which pattern is
@@ -347,37 +386,49 @@ def SimilarPatternsCollapser(patterns, track_set,
 						merge_partners_so_far[an_idx]=\
 							merge_under_consideration 
 
-		for i, j in indices_to_merge:
-			pattern1 = patterns[i]
-			pattern2 = patterns[j]
+		if indices_to_merge:
+			with progress.task(
+				"{} aligned merges (pass {})".format(label, merge_pass),
+				total=len(indices_to_merge),
+				unit="merge",
+			) as merge_task:
+				for i, j in indices_to_merge:
+					pattern1 = patterns[i]
+					pattern2 = patterns[j]
 
-			if pattern1 != pattern2: #if not the same object
-				if len(pattern1.seqlets) < len(pattern2.seqlets):
-					parent_pattern, child_pattern = pattern2, pattern1
-				else:
-					parent_pattern, child_pattern = pattern1, pattern2
+					if pattern1 != pattern2: #if not the same object
+						if len(pattern1.seqlets) < len(pattern2.seqlets):
+							parent_pattern, child_pattern = pattern2, pattern1
+						else:
+							parent_pattern, child_pattern = pattern1, pattern2
 
-				new_pattern = merge_in_seqlets_filledges(
-					parent_pattern=parent_pattern,
-					seqlets_to_merge=child_pattern.seqlets,
-					include_hypothetical=False,
-					metric=affinitymat.pearson_correlation,
-					min_overlap=min_overlap,
-					transformer='magnitude',
-					track_set=track_set)
+						new_pattern = merge_in_seqlets_filledges(
+							parent_pattern=parent_pattern,
+							seqlets_to_merge=child_pattern.seqlets,
+							include_hypothetical=False,
+							metric=affinitymat.pearson_correlation,
+							min_overlap=min_overlap,
+							transformer='magnitude',
+							track_set=track_set)
 
-				new_pattern = polish_pattern(new_pattern, min_frac=min_frac, 
-					min_num=min_num, track_set=track_set, flank=flank_to_add, 
-					window_size=window_size, bg_freq=bg_freq)
+						new_pattern = polish_pattern(new_pattern, min_frac=min_frac, 
+							min_num=min_num, track_set=track_set, flank=flank_to_add, 
+							window_size=window_size, bg_freq=bg_freq)
 
-				if new_pattern is not None:
-					for k in range(len(patterns)):
-						#Replace EVERY case where the parent or child
-						# pattern is present with the new pattern. This
-						# effectively does single-linkage.
-						if (patterns[k]==parent_pattern or
-							patterns[k]==child_pattern):
-							patterns[k]=new_pattern
+						if new_pattern is not None:
+							for k in range(len(patterns)):
+								#Replace EVERY case where the parent or child
+								# pattern is present with the new pattern. This
+								# effectively does single-linkage.
+								if (patterns[k]==parent_pattern or
+									patterns[k]==child_pattern):
+									patterns[k]=new_pattern
+					merge_task.advance()
+		else:
+			progress.note(
+				"{} pass {}: no compatible pattern pairs".format(
+					label, merge_pass)
+			)
 
 		merge_occurred_last_iteration = (len(indices_to_merge) > 0)
 
@@ -480,6 +531,11 @@ def SimilarPatternsCollapser(patterns, track_set,
 							old_pattern_node.parent_node = next_level_node
 
 			current_level_nodes = next_level_nodes
+
+		progress.note(
+			"{} pass {} complete: {} patterns remain".format(
+				label, merge_pass, len(patterns))
+		)
 
 	return patterns, PatternMergeHierarchy(root_nodes=current_level_nodes)
 	

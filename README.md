@@ -61,6 +61,20 @@ This command will run modisco on the one-hot encoded RNA sequences in `ohe.npz`,
 
 RNA-MoDISco no longer applies a user-specified fixed motif-search window. `region=all` searches the full non-padded RNA sequence, and `--region 5utr`, `--region cds`, or `--region 3utr` searches the full inferred non-padded region.
 
+### Runtime Progress
+
+The `motifs` command shows progress by default with `--progress auto`. In an interactive terminal, RNA-MoDISco renders progress bars for countable work such as RNA validation, seqlet extraction, Leiden seeds, pattern construction, merging, subclustering, and result writing. When output is redirected to a file or a batch scheduler such as SLURM, `auto` switches to timestamped, append-only status messages that are suitable for `tail -f`.
+
+The expensive gapped-kmer and affinity kernels run as compiled Numba operations. RNA-MoDISco reports when each kernel starts, the size of its workload, and its elapsed time when it finishes, but does not display a misleading internal percentage or ETA for those opaque operations.
+
+- `--progress auto` is the default and selects terminal bars or batch-safe logs automatically.
+- `--progress bar` forces progress bars.
+- `--progress log` forces timestamped status lines.
+- `--progress off` disables all progress output.
+- `-v`/`--verbose` enables additional diagnostics alongside progress output.
+
+Direct Python API calls remain silent by default. Pass `progress=True`, a mode such as `progress="log"`, or a `modiscolite.progress.ProgressReporter` instance to `TFMoDISco` to opt in.
+
 ## Seqlet and Pattern Sizing Parameters
 
 The `modisco motifs` command exposes several size parameters that control two related but different objects:
