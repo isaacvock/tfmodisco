@@ -17,6 +17,7 @@ from . import util
 from . import meme_writer
 from . import bed_writer
 from . import fasta_writer
+from .progress import ensure_progress
 
 def convert(old_filename, filename):
 	old_grp = h5py.File(old_filename, "r")['metacluster_idx_to_submetacluster_results']
@@ -189,7 +190,7 @@ def save_pattern(pattern, grp):
 
 
 def save_hdf5(filename: os.PathLike, pos_patterns, neg_patterns, window_size: int,
-	region: str = "all"):
+	region: str = "all", progress=None):
 	"""Save the results of tf-modisco to a h5 file.
 
 	This function will save the SeqletSets and their associated seqlets in
@@ -210,26 +211,40 @@ def save_hdf5(filename: os.PathLike, pos_patterns, neg_patterns, window_size: in
 		A list of SeqletSet objects or None.
 	"""
 
-	grp = h5py.File(filename, 'w')
-	
-	grp.attrs['window_size'] = window_size
-	grp.attrs['sequence_length'] = window_size
-	grp.attrs['tool'] = 'RNA-MoDISco'
-	grp.attrs['alphabet'] = 'ACGU'
-	grp.attrs['reverse_complement'] = False
-	grp.attrs['region'] = region
-	
-	if pos_patterns is not None:
-		pos_group = grp.create_group("pos_patterns")
-		for idx, pattern in enumerate(pos_patterns):
-			pos_pattern = pos_group.create_group("pattern_"+str(idx))
-			save_pattern(pattern, pos_pattern)
+	progress = ensure_progress(progress)
+	n_pos_patterns = 0 if pos_patterns is None else len(pos_patterns)
+	n_neg_patterns = 0 if neg_patterns is None else len(neg_patterns)
+	with progress.task(
+		"Saving HDF5 results",
+		total=n_pos_patterns + n_neg_patterns,
+		unit="pattern",
+		detail=str(filename),
+	) as task:
+		with h5py.File(filename, 'w') as grp:
+			grp.attrs['window_size'] = window_size
+			grp.attrs['sequence_length'] = window_size
+			grp.attrs['tool'] = 'RNA-MoDISco'
+			grp.attrs['alphabet'] = 'ACGU'
+			grp.attrs['reverse_complement'] = False
+			grp.attrs['region'] = region
+			
+			if pos_patterns is not None:
+				pos_group = grp.create_group("pos_patterns")
+				for idx, pattern in enumerate(pos_patterns):
+					pos_pattern = pos_group.create_group("pattern_"+str(idx))
+					save_pattern(pattern, pos_pattern)
+					task.advance()
 
-	if neg_patterns is not None:
-		neg_group = grp.create_group("neg_patterns")
-		for idx, pattern in enumerate(neg_patterns):
-			neg_pattern = neg_group.create_group("pattern_"+str(idx))
-			save_pattern(pattern, neg_pattern)
+			if neg_patterns is not None:
+				neg_group = grp.create_group("neg_patterns")
+				for idx, pattern in enumerate(neg_patterns):
+					neg_pattern = neg_group.create_group("pattern_"+str(idx))
+					save_pattern(pattern, neg_pattern)
+					task.advance()
+		task.set_summary(
+			"{} positive • {} negative patterns".format(
+				n_pos_patterns, n_neg_patterns)
+		)
 
 
 def write_meme_from_h5(filename: os.PathLike, datatype: util.MemeDataType, output_filename: Union[os.PathLike, None], is_quiet: bool) -> None:

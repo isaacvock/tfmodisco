@@ -13,5 +13,6 @@ from . import meme_writer
 from . import bed_writer
 from . import fasta_writer
 from . import descriptive_report
+from . import progress
 
 __version__ = '2.5.2'
