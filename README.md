@@ -32,6 +32,9 @@ Related tools:
 
 ## Installation
 
+TF-MoDISco requires Python 3.9 or newer. Leiden is pinned to version 0.11.0
+to keep clustering results consistent; its igraph dependency requires Python 3.9 or newer.
+
 You can install TF-MoDISco using `pip install modisco`
 
 ## RNA Tensor Conventions
@@ -144,5 +147,5 @@ The report details each pattern, including seqlet importance and spatial distrib
 
 For users who need the legacy report format use:
 ```sh
-modisco report-simple -i modisco_results.h5 -o simple_report/ -s simple_report/ -m motifs.txt
+modisco report-simple -i modisco_results.h5 -o simple_report/ -m motifs.txt
 ```

@@ -8,6 +8,16 @@ Version 2.6.0
 
 modisco
 ------
+	- Port the TF-MoDISco 2.6 computation, memory, multiprocessing, loading, and
+	startup optimizations to the stranded RNA pipeline. Forward-only kernels
+	avoid allocating synthetic reverse-complement matrices while preserving the
+	RNA API, masks, optional six-channel annotations, result schema, and
+	deterministic output.
+
+	- Add exact baseline regressions for coordinates, aggregate arrays,
+	subclusters, and output ordering, plus four- and six-channel mask and region
+	coverage. See `BENCHMARKS.md` for the available-fixture measurements.
+
 
 	- CLI rewritten in click
 	- Unit tests
@@ -16,6 +26,19 @@ modisco
 	timestamped status lines. Long compiled Numba stages report their workload
 	and elapsed time without presenting a misleading internal percentage.
 	Thanks @MuhammedHasan!
+
+	- Unit tests now cover every module, run on a committed set of real
+	attributions instead of downloaded data, and finish in under a minute.
+	CLI tests are deselected by default; run them with `pytest -m cmd`.
+
+	- GitHub Actions runs the full test suite, including the CLI tests, on
+	Python 3.9 through 3.13 for every pull request and push to master.
+
+	- Process scheduling and background compilation respect runtime thread
+	limits set with numba.set_num_threads(). Explicit worker budgets are retained.
+
+	- Require Python 3.9 or newer, matching the pinned Leiden/igraph dependencies
+	and the process APIs used by the optimized pipeline.
 
 
 

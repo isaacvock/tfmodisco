@@ -5,7 +5,7 @@ import numpy as np
 from click.testing import CliRunner
 
 from modiscolite.cli import motifs
-from conftest import data_ohe_hyps
+from tests.conftest import data_ohe_hyps
 
 
 def test_modisco_motif_smoke(data_ohe_hyps, tmp_path):

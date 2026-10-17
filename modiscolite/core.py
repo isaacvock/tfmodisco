@@ -1,6 +1,6 @@
 # core.py
 # Authors: Jacob Schreiber <jmschreiber91@gmail.com>
-# adapted from code written by Avanti Shrikumar 
+# adapted from code written by Avanti Shrikumar
 
 import pickle
 
@@ -22,45 +22,107 @@ class TrackSet(object):
 		self.contrib_scores = contrib_scores
 		self.hypothetical_contribs = hypothetical_contribs
 		self.length = one_hot.shape[1]
-		self.position_mask = (
-			np.ones(one_hot.shape[:2], dtype=bool)
-			if position_mask is None else position_mask.astype(bool))
-		self.padding_mask = (
-			self.position_mask.copy()
-			if padding_mask is None else padding_mask.astype(bool))
-		self.sequence_features = (
-			one_hot if sequence_features is None else sequence_features)
+		self.position_mask = (np.ones(one_hot.shape[:2], dtype=bool)
+			if position_mask is None else np.asarray(position_mask, dtype=bool))
+		self.padding_mask = (self.position_mask.copy() if padding_mask is None
+			else np.asarray(padding_mask, dtype=bool))
+		self.sequence_features = (one_hot if sequence_features is None
+			else sequence_features)
 		self.region = region
 		self.region_metadata = region_metadata
 
 	def is_valid_interval(self, example_idx, start, end):
-		return (
-			start >= 0 and end <= self.length and
-			np.all(self.position_mask[example_idx, start:end]))
+		return (0 <= example_idx < self.one_hot.shape[0] and 0 <= start < end
+			and end <= self.length
+			and np.all(self.position_mask[example_idx, start:end]))
 
 	def create_seqlets(self, seqlets):
 		for seqlet in seqlets:
 			if seqlet.is_revcomp:
-				raise ValueError(
-					"RNA-MoDISco is stranded and does not support reverse-complement "
-					"seqlets during motif discovery.")
+				raise ValueError("RNA-MoDISco is stranded and does not support "
+					"reverse-complement seqlets during motif discovery.")
 
 			idx = seqlet.example_idx
 			s, e = seqlet.start, seqlet.end
-
 			if not self.is_valid_interval(idx, s, e):
-				raise ValueError(
-					"seqlet example {} interval {}:{} overlaps padding or an "
-					"excluded RNA region."
-					.format(idx, s, e))
+				raise ValueError("seqlet example {} interval {}:{} overlaps padding "
+					"or an excluded RNA region.".format(idx, s, e))
 
-			seqlet.sequence = self.one_hot[idx][s:e]
-			seqlet.contrib_scores = self.contrib_scores[idx][s:e]
-			seqlet.hypothetical_contribs = self.hypothetical_contribs[idx][s:e]
-			seqlet.sequence_features = self.sequence_features[idx][s:e]
-			seqlet.position_mask = self.position_mask[idx][s:e]
+			seqlet.sequence = self.one_hot[idx, s:e]
+			seqlet.contrib_scores = self.contrib_scores[idx, s:e]
+			seqlet.hypothetical_contribs = self.hypothetical_contribs[idx, s:e]
+			seqlet.sequence_features = self.sequence_features[idx, s:e]
+			seqlet.position_mask = self.position_mask[idx, s:e]
 
 		return seqlets
+
+	def _add_seqlet_sums(self, seqlets, length, sums):
+		"""Add up the three tracks of `seqlets` into `sums`, the zeroed
+		running sums of a SeqletSet of that length, as SeqletSet.__init__
+		adds them up: in seqlet order, from the seqlets' coordinates rather
+		than their arrays (util._seqlet_sums). The seqlets must be this
+		track set's: each one's arrays the views create_seqlets makes at its
+		coordinates, and each `length` long. Returns False, with `sums`
+		zero again, when the kernel does not apply: tracks that are not
+		float32 (N, L, 4) arrays of one shape, a coordinate outside them, or
+		a NaN among the values."""
+
+		return self._coordinate_sums(
+			[seqlet.example_idx for seqlet in seqlets],
+			[seqlet.start for seqlet in seqlets],
+			[seqlet.is_revcomp for seqlet in seqlets], length, sums)
+
+	def _coordinate_sums(self, example_idx, starts, revcomp, length, sums):
+		"""_add_seqlet_sums for seqlets given by their coordinates rather
+		than as Seqlet objects: their example indices, starts and strands
+		(each seqlet's example_idx, start and is_revcomp, in seqlet order;
+		the strands may also be a uint8 array of their truth values), for
+		seqlets that are `length` long and whose arrays would be the views
+		create_seqlets makes at those coordinates. The same checks, the same
+		kernel and the same result."""
+
+		tracks = (self.one_hot, self.contrib_scores, self.hypothetical_contribs)
+		for track in tracks:
+			if not (isinstance(track, np.ndarray) and track.dtype == np.float32
+					and track.ndim == 3 and track.shape == tracks[0].shape
+					and track.shape[2] == 4):
+				return False
+
+		if len(example_idx) == 0 or sums[0].shape != (length, 4):
+			return False
+		if len(sums) not in (3, 4):
+			return False
+		if (len(sums) == 4 and sums[3].shape !=
+				(length, self.sequence_features.shape[2])):
+			return False
+
+		example_idx = np.array(example_idx, dtype=np.int64)
+		starts = np.array(starts, dtype=np.int64)
+		if not (isinstance(revcomp, np.ndarray) and revcomp.dtype == np.uint8):
+			revcomp = np.array([bool(is_revcomp) for is_revcomp in revcomp],
+				dtype=np.uint8)
+
+		n_examples, track_length, _ = tracks[0].shape
+		if (example_idx.min() < 0 or example_idx.max() >= n_examples
+				or starts.min() < 0 or starts.max() + length > track_length):
+			return False
+		if np.any(revcomp):
+			return False
+		for idx, start in zip(example_idx, starts):
+			if not self.is_valid_interval(int(idx), int(start), int(start + length)):
+				return False
+
+		if util._seqlet_sums(*tracks, example_idx, starts, revcomp, *sums[:3]):
+			if len(sums) == 4:
+				feature_sum = sums[3]
+				for idx, start in zip(example_idx, starts):
+					feature_sum += self.sequence_features[idx, start:start + length]
+			return True
+
+		for total in sums:
+			total[...] = 0.0
+		return False
+
 
 class Seqlet(object):
 	def __init__(self, example_idx, start, end, is_revcomp=False):
@@ -75,8 +137,6 @@ class Seqlet(object):
 		self.sequence_features = None
 		self.position_mask = None
 
-		super(Seqlet, self).__init__()
-
 	def __str__(self):
 		return ("example:"+str(self.example_idx)
 				+",start:"+str(self.start)+",end:"+str(self.end)
@@ -85,9 +145,12 @@ class Seqlet(object):
 	def __len__(self):
 		return self.end - self.start
 
+	# str() of each coordinate, joined by underscores. aggregator's
+	# coordinate-only expansions (_expanded, _trimmed) build the same key
+	# with the same expression.
 	@property
 	def string(self):
-		return str(self.example_idx)+"_"+str(self.start)+"_"+str(self.end)
+		return f"{self.example_idx!s}_{self.start!s}_{self.end!s}"
 
 	def revcomp(self):
 		raise ValueError(
@@ -100,6 +163,9 @@ class Seqlet(object):
 				is_revcomp=self.is_revcomp)
 
 	def trim(self, start_idx, end_idx):
+		if self.is_revcomp:
+			raise ValueError(
+				"RNA-MoDISco is stranded; reverse-complement seqlets are disabled.")
 		new_start = self.start + start_idx
 		new_end = self.start + end_idx
 
@@ -118,84 +184,135 @@ class Seqlet(object):
 
 
 class SeqletSet():
-	def __init__(self, seqlets):
+	def __init__(self, seqlets, track_set=None):
+		# track_set: the TrackSet whose create_seqlets made `seqlets`, when
+		# the caller knows it, so that the sums can be added up from the
+		# seqlets' coordinates (TrackSet._add_seqlet_sums).
 		self.seqlets = []
 		self.unique_seqlets = {}
-		self.length = max([len(seqlet) for seqlet in seqlets])  
-		
+		lengths = [len(seqlet) for seqlet in seqlets]
+		self.length = max(lengths)
+
 		self._sequence_sum = np.zeros((self.length, 4), dtype='float')
 		self._contrib_sum = np.zeros((self.length, 4), dtype='float')
 		self._hypothetical_sum = np.zeros((self.length, 4), dtype='float')
-		sequence_features = getattr(seqlets[0], "sequence_features", None)
-		self._sequence_features_sum = None
-		self.sequence_features = None
-		if sequence_features is not None:
-			self._sequence_features_sum = np.zeros(
-				(self.length, sequence_features.shape[1]), dtype='float')
-			self.sequence_features = np.zeros_like(self._sequence_features_sum)
-
-		self.sequence = np.zeros((self.length, 4), dtype='float')
-		self.contrib_scores = np.zeros((self.length, 4), dtype='float')
-		self.hypothetical_contribs = np.zeros((self.length, 4), dtype='float')
+		features = getattr(seqlets[0], 'sequence_features', None)
+		self._sequence_features_sum = (None if features is None else
+			np.zeros((self.length, features.shape[1]), dtype='float'))
 
 		self.per_position_counts = np.zeros((self.length,))
 
-		for seqlet in seqlets:
-			if seqlet.string not in self.unique_seqlets: 
-				self._add_seqlet(seqlet=seqlet)
-		
+		# The averages `sequence`, `contrib_scores` and
+		# `hypothetical_contribs` are computed from the sums when read, and
+		# kept until the next _add_seqlet. None means not yet computed.
+		self._ppc = None
+		self._sequence = None
+		self._contrib_scores = None
+		self._hypothetical_contribs = None
+		self._sequence_features = None
+
+		if min(lengths) == self.length:
+			# All seqlets are self.length long: keep the first seqlet of
+			# each string, in order, and build the counts and sums in one
+			# batch. This gives the same bits as calling _add_seqlet on each
+			# kept seqlet: numpy reduces along the stacked (outer) axis one
+			# seqlet at a time, starting from `initial`, which is the order
+			# of the running sums.
+			for seqlet in seqlets:
+				key = seqlet.string
+				if key not in self.unique_seqlets:
+					self.unique_seqlets[key] = seqlet
+					self.seqlets.append(seqlet)
+
+			if self.seqlets:
+				self.per_position_counts += len(self.seqlets)
+				if track_set is None or not track_set._add_seqlet_sums(
+						self.seqlets, self.length, self._sums()):
+					for total, track in ((self._sequence_sum, 'sequence'),
+							(self._contrib_sum, 'contrib_scores'),
+							(self._hypothetical_sum, 'hypothetical_contribs')):
+						np.add.reduce(np.array([getattr(seqlet, track)
+							for seqlet in self.seqlets]), axis=0,
+							dtype=np.float64, initial=0.0, out=total)
+					if self._sequence_features_sum is not None:
+						np.add.reduce(np.array([seqlet.sequence_features
+							for seqlet in self.seqlets]), axis=0,
+							dtype=np.float64, initial=0.0,
+							out=self._sequence_features_sum)
+		else:
+			for seqlet in seqlets:
+				if seqlet.string not in self.unique_seqlets:
+					self._add_seqlet(seqlet=seqlet)
+
 		self.subclusters = None
 		self.subcluster_to_subpattern = None
 
 	def compute_subpatterns(self, perplexity, n_seeds, n_iterations=-1,
-		progress=None):
+		affinity=None, track_set=None, progress=None):
+		"""Subcluster the seqlets: Leiden on the density-adapted affinity
+		matrix (`_subpattern_affinity`, or `affinity` when the caller has
+		already computed it for this pattern and this perplexity).
+		track_set: as for _set_subclusters."""
+
+		progress = ensure_progress(progress)
+		if affinity is None:
+			with progress.task("Pairwise subclustering similarity"):
+				affinity = self._subpattern_affinity(perplexity)
+
+		#Do Leiden clustering
+		self._set_subclusters(cluster.LeidenCluster(affinity,
+			n_seeds=n_seeds, n_leiden_iterations=n_iterations,
+			progress=progress, task_name="Subpattern Leiden clustering"),
+			track_set=track_set)
+
+	def _subpattern_affinity(self, perplexity):
+		"""The density-adapted affinity matrix that compute_subpatterns
+		clusters: the first half of compute_subpatterns, which a caller may
+		run on its own, with more threads than the Leiden part gets."""
+
 		#this method assumes all the seqlets have been expanded so they
 		# all start at 0
-		progress = ensure_progress(progress)
-		X = util.get_2d_data_from_patterns(self.seqlets)[0]
+		X = util.get_fwd_data_from_patterns(self.seqlets)
 		X = X.reshape(len(X), -1)
-	
+
 		n = len(X)
 		n_neighb = min(int(perplexity*3 + 2), len(X))
 
-		with progress.task(
-			"Pairwise subclustering similarity",
-			detail=(
-				"{:,} seqlets • ~{:,} pair comparisons • "
-				"compiled Numba stage with no internal percentage"
-			).format(n, n * n),
-		) as task:
-			affmat_nn, seqlet_neighbors = affinitymat.pairwise_jaccard(
-				X, n_neighb)
-			task.set_summary(
-				"{:,} seqlets • up to {:,} neighbors each".format(
-					n, n_neighb)
-			)
+		affmat_nn, seqlet_neighbors = affinitymat.pairwise_jaccard(X, n_neighb)
 
-		distmat_nn = np.log((1.0/(0.5*np.maximum(affmat_nn, 0.0000001)))-1)
-		distmat_nn = np.maximum(distmat_nn, 0.0) #eliminate tiny neg floats
-
-		distmat_sp = scipy.sparse.coo_matrix(
-				(np.concatenate(distmat_nn, axis=0),
-				 (np.array([i for i in range(len(seqlet_neighbors))
-							   for j in seqlet_neighbors[i]]).astype("int"),
-				  np.concatenate(seqlet_neighbors, axis=0)) ),
-				shape=(len(distmat_nn), len(distmat_nn))).tocsr()
-
-		distmat_sp.sort_indices()
+		# Upstream built a sparse distance matrix here that nothing read;
+		# NNTsneConditionalProbs computes the same distances itself.
 
 		#do density adaptation
-		with progress.task("Adapting subclustering density"):
-			sp_density_adapted_affmat = affinitymat.NNTsneConditionalProbs(
-					perplexity=perplexity)(affmat_nn, seqlet_neighbors)
+		sp_density_adapted_affmat = affinitymat.NNTsneConditionalProbs(
+				perplexity=perplexity)(affmat_nn, seqlet_neighbors)
 
-			sp_density_adapted_affmat += sp_density_adapted_affmat.T
-			sp_density_adapted_affmat /= np.sum(sp_density_adapted_affmat.data)
+		sp_density_adapted_affmat += sp_density_adapted_affmat.T
+		sp_density_adapted_affmat /= np.sum(sp_density_adapted_affmat.data)
+		return sp_density_adapted_affmat
 
-		#Do Leiden clustering
-		self.subclusters = cluster.LeidenCluster(sp_density_adapted_affmat,
-			n_seeds=n_seeds, n_leiden_iterations=n_iterations,
-			progress=progress, task_name="Subpattern Leiden clustering") 
+	def _compile_subpattern_kernels(self):
+		"""Compile the numba kernel compute_subpatterns calls, for the
+		argument types it passes, by calling it on this pattern's first two
+		seqlets. Called before forking workers that subcluster patterns, so
+		that they inherit the compiled code instead of each compiling it."""
+
+		X = util.get_fwd_data_from_patterns(self.seqlets[:2])
+		X = X.reshape(len(X), -1)
+		try:
+			affinitymat.pairwise_jaccard(X, len(X))
+		except Exception:
+			pass
+
+	def _set_subclusters(self, subclusters, track_set=None):
+		"""Store the subcluster of each seqlet (the Leiden membership) and
+		build the subpatterns from it: the second half of
+		compute_subpatterns, also used to attach a membership computed in a
+		forked worker. track_set: the TrackSet whose create_seqlets made
+		this pattern's seqlets, when the caller knows it, for the
+		subpatterns' sums (SeqletSet)."""
+
+		self.subclusters = subclusters
 
 		#this method assumes all the seqlets have been expanded so they
 		# all start at 0
@@ -203,11 +320,11 @@ class SeqletSet():
 		for seqlet, subcluster in zip(self.seqlets, self.subclusters):
 			if (subcluster not in subcluster_to_seqletsandalignments):
 				subcluster_to_seqletsandalignments[subcluster] = []
-			
+
 			subcluster_to_seqletsandalignments[subcluster].append(seqlet)
 
 		subcluster_to_subpattern = OrderedDict([
-			(subcluster, SeqletSet(seqletsandalignments))
+			(subcluster, SeqletSet(seqletsandalignments, track_set=track_set))
 			for subcluster,seqletsandalignments in
 			subcluster_to_seqletsandalignments.items()])
 
@@ -217,13 +334,75 @@ class SeqletSet():
 			sorted(subcluster_to_subpattern.items(),
 				   key=lambda x: -len(x[1].seqlets)))
 
+	@classmethod
+	def _assemble(cls, seqlets, unique_seqlets, length, per_position_counts,
+		sums):
+		"""A SeqletSet holding this state, made without __init__'s pass over
+		the seqlets. The caller guarantees that it is what
+		SeqletSet(seqlets) would hold: `seqlets` and `unique_seqlets` as
+		__init__ would keep them, and `per_position_counts` and `sums` (the
+		sequence, contrib_scores and hypothetical_contribs running sums) as
+		it would add them up from those seqlets, value for value."""
+
+		self = cls.__new__(cls)
+		self.seqlets = seqlets
+		self.unique_seqlets = unique_seqlets
+		self.length = length
+		self._sequence_sum, self._contrib_sum, self._hypothetical_sum = sums[:3]
+		self._sequence_features_sum = sums[3] if len(sums) > 3 else None
+		self.per_position_counts = per_position_counts
+		self._ppc = None
+		self._sequence = None
+		self._contrib_scores = None
+		self._hypothetical_contribs = None
+		self._sequence_features = None
+		self.subclusters = None
+		self.subcluster_to_subpattern = None
+		return self
+
+	def _sums(self):
+		sums = (self._sequence_sum, self._contrib_sum, self._hypothetical_sum)
+		if self._sequence_features_sum is not None:
+			sums += (self._sequence_features_sum,)
+		return sums
+
+	def _spans_length(self):
+		"""Whether every seqlet, and each of its three tracks, is exactly as
+		long as this set: then every running sum has added every seqlet, in
+		order, at every position."""
+
+		n = self.length
+		for seqlet in self.seqlets:
+			if (len(seqlet) != n or seqlet.sequence.shape[0] != n
+					or seqlet.contrib_scores.shape[0] != n
+					or seqlet.hypothetical_contribs.shape[0] != n
+					or (self._sequence_features_sum is not None and
+						seqlet.sequence_features.shape[0] != n)):
+				return False
+		return True
+
 	def copy(self):
+		# SeqletSet(seqlets=self.seqlets) keeps every seqlet when their
+		# strings are distinct, with this set's length, and adds up the same
+		# counts and sums in the same order, so this set's are copied.
+		if len(self.unique_seqlets) == len(self.seqlets):
+			return SeqletSet._assemble(list(self.seqlets),
+				dict(self.unique_seqlets), self.length,
+				self.per_position_counts.copy(),
+				tuple(total.copy() for total in self._sums()))
+
 		return SeqletSet(seqlets=[seqlet for seqlet in self.seqlets])
 
 	def trim_to_support(self, min_frac, min_num):
+		left_idx, right_idx = self._support_window(min_frac, min_num)
+		return self.trim_to_idx(start_idx=left_idx, end_idx=right_idx)
+
+	def _support_window(self, min_frac, min_num):
+		"""The (start_idx, end_idx) that trim_to_support trims to."""
+
 		max_support = max(self.per_position_counts)
 		num = min(min_num, max_support*min_frac)
-		
+
 		left_idx = 0
 		while self.per_position_counts[left_idx] < num:
 			left_idx += 1
@@ -231,14 +410,31 @@ class SeqletSet():
 		right_idx = len(self.per_position_counts)
 		while self.per_position_counts[right_idx-1] < num:
 			right_idx -= 1
-		
-		return self.trim_to_idx(start_idx=left_idx, end_idx=right_idx) 
+
+		return left_idx, right_idx
 
 	def trim_to_idx(self, start_idx, end_idx):
 		new_seqlets = []
 		for seqlet in self.seqlets:
 				new_seqlet = seqlet.trim(start_idx=start_idx, end_idx=end_idx)
 				new_seqlets.append(new_seqlet)
+
+		# When every seqlet spans this set and the window lies inside it,
+		# each trimmed seqlet is its seqlet's rows start_idx:end_idx; if their
+		# strings are still distinct, SeqletSet(new_seqlets) keeps all of
+		# them and adds up at each position, in the same order, the values
+		# this set added up there, so its counts and sums are this set's over
+		# the window.
+		if 0 <= start_idx < end_idx <= self.length:
+			unique = {seqlet.string: seqlet for seqlet in new_seqlets}
+			if len(unique) == len(new_seqlets) and self._spans_length():
+				length = end_idx - start_idx
+				counts = np.zeros((length,))
+				counts += len(new_seqlets)
+				return SeqletSet._assemble(new_seqlets, unique, length, counts,
+					tuple(total[start_idx:end_idx].copy()
+						for total in self._sums()))
+
 		return SeqletSet(seqlets=new_seqlets)
 
 	def _add_seqlet(self, seqlet):
@@ -246,23 +442,76 @@ class SeqletSet():
 
 		self.seqlets.append(seqlet)
 		self.unique_seqlets[seqlet.string] = seqlet
-		self.per_position_counts[:n] += 1.0 
-
-		ppc = self.per_position_counts[:, None]
-		ppc = ppc + 1E-7 * (ppc == 0)
+		self.per_position_counts[:n] += 1.0
 
 		self._sequence_sum[:n] += seqlet.sequence
 		self._contrib_sum[:n] += seqlet.contrib_scores
 		self._hypothetical_sum[:n] += seqlet.hypothetical_contribs
 		if (self._sequence_features_sum is not None and
-			seqlet.sequence_features is not None):
+				seqlet.sequence_features is not None):
 			self._sequence_features_sum[:n] += seqlet.sequence_features
 
-		self.sequence = self._sequence_sum / ppc
-		self.contrib_scores = self._contrib_sum / ppc
-		self.hypothetical_contribs = self._hypothetical_sum / ppc
-		if self._sequence_features_sum is not None:
-			self.sequence_features = self._sequence_features_sum / ppc
+		# Recomputed from the new sums and counts when next read.
+		self._ppc = None
+		self._sequence = None
+		self._contrib_scores = None
+		self._hypothetical_contribs = None
+		self._sequence_features = None
+
+	def _counts(self):
+		"""The per-position counts as the divisor of the averages: a column,
+		with zero counts replaced by 1E-7."""
+
+		if self._ppc is None:
+			ppc = self.per_position_counts[:, None]
+			self._ppc = ppc + 1E-7 * (ppc == 0)
+		return self._ppc
+
+	# Each average is a new array, made when it is first read after a
+	# change, so an array read earlier keeps the values it had. Assigning
+	# one stores the value until the next _add_seqlet.
+	@property
+	def sequence(self):
+		if self._sequence is None:
+			self._sequence = self._sequence_sum / self._counts()
+		return self._sequence
+
+	@sequence.setter
+	def sequence(self, value):
+		self._sequence = value
+
+	@property
+	def contrib_scores(self):
+		if self._contrib_scores is None:
+			self._contrib_scores = self._contrib_sum / self._counts()
+		return self._contrib_scores
+
+	@contrib_scores.setter
+	def contrib_scores(self, value):
+		self._contrib_scores = value
+
+	@property
+	def hypothetical_contribs(self):
+		if self._hypothetical_contribs is None:
+			self._hypothetical_contribs = (self._hypothetical_sum /
+				self._counts())
+		return self._hypothetical_contribs
+
+	@hypothetical_contribs.setter
+	def hypothetical_contribs(self, value):
+		self._hypothetical_contribs = value
+
+	@property
+	def sequence_features(self):
+		if self._sequence_features_sum is None:
+			return None
+		if self._sequence_features is None:
+			self._sequence_features = self._sequence_features_sum / self._counts()
+		return self._sequence_features
+
+	@sequence_features.setter
+	def sequence_features(self, value):
+		self._sequence_features = value
 
 	def __len__(self):
 		return self.length

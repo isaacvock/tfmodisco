@@ -1,14 +1,23 @@
 # tf-modisco command-line tool
 # Author: Jacob Schreiber <jmschreiber91@gmail.com>, Ivy Raine <ivy.ember.raine@gmail.com>
 
+import io
+import struct
+import zipfile
+import zlib
+
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Literal, Union, Optional
 
 import click
 import h5py
+import numba
 import numpy as np
+from numpy.lib import format as npy_format
 
 import modiscolite
+from modiscolite import precompile
 from modiscolite.progress import ProgressReporter
 from modiscolite.util import MemeDataType
 
@@ -16,6 +25,55 @@ from modiscolite.util import MemeDataType
 def _split_chroms(chroms: str) -> Union[List[str], Literal["*"]]:
     """Convert comma-delimited ``chroms`` argument to a list or '*' literal."""
     return "*" if chroms == "*" else chroms.split(",")
+
+
+def _read_npz_member(path, key):
+    """Read a simple stored/deflated NPY member in one GIL-free inflate."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            if key in names or key + ".npy" not in names:
+                return None
+            info = archive.getinfo(key + ".npy")
+        if info.flag_bits & 1 or info.compress_type not in (
+                zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+            return None
+        with open(path, "rb") as handle:
+            handle.seek(info.header_offset)
+            header = handle.read(30)
+            if len(header) != 30 or header[:4] != b"PK\x03\x04":
+                return None
+            name_length, extra_length = struct.unpack("<HH", header[26:30])
+            handle.seek(info.header_offset + 30 + name_length + extra_length)
+            data = handle.read(info.compress_size)
+        if info.compress_type == zipfile.ZIP_DEFLATED:
+            data = zlib.decompress(data, -15, max(info.file_size, 1))
+        if len(data) != info.file_size or zlib.crc32(data) != info.CRC:
+            return None
+        stream = io.BytesIO(data)
+        version = npy_format.read_magic(stream)
+        if version == (1, 0):
+            shape, fortran_order, dtype = npy_format.read_array_header_1_0(stream)
+        elif version == (2, 0):
+            shape, fortran_order, dtype = npy_format.read_array_header_2_0(stream)
+        else:
+            return None
+        count = int(np.prod(shape, dtype=np.int64))
+        offset = stream.tell()
+        if dtype.hasobject or offset + count * dtype.itemsize != len(data):
+            return None
+        array = np.frombuffer(data, dtype=dtype, count=count, offset=offset)
+        return (array.reshape(shape[::-1]).transpose() if fortran_order
+                else array.reshape(shape))
+    except Exception:
+        return None
+
+
+def _load_input(path):
+    if path.suffix == ".npz":
+        array = _read_npz_member(path, "arr_0")
+        return np.load(path)["arr_0"] if array is None else array
+    return np.load(path)
 
 
 @click.group(
@@ -179,6 +237,8 @@ def motifs(
     verbose: bool,
 ):
     """Run RNA-MoDISco and extract motifs."""
+	# Compile forward-only kernels while input files are being read.
+    precompile.start()
     if window is not None:
         raise click.UsageError(
             "RNA-MoDISco no longer accepts --window/-w for motif discovery. "
@@ -209,16 +269,16 @@ def motifs(
         else:
             seq_path = Path(seq_path)
             attr_path = Path(attr_path)
-            sequences = (
-                np.load(seq_path)["arr_0"]
-                if seq_path.suffix == ".npz"
-                else np.load(seq_path)
-            )
-            attributions = (
-                np.load(attr_path)["arr_0"]
-                if attr_path.suffix == ".npz"
-                else np.load(attr_path)
-            )
+            if numba.get_num_threads() > 1:
+                with ThreadPoolExecutor(2) as pool:
+                    sequence_future = pool.submit(_load_input, seq_path)
+                    attribution_future = pool.submit(_load_input, attr_path)
+                    modiscolite.tfmodisco._import_dependencies()
+                    sequences = sequence_future.result()
+                    attributions = attribution_future.result()
+            else:
+                sequences = _load_input(seq_path)
+                attributions = _load_input(attr_path)
         task.set_summary(
             "sequence shape={} • attribution shape={}".format(
                 sequences.shape, attributions.shape)
@@ -245,9 +305,13 @@ def motifs(
         )
     )
 
+    one_hot = np.ascontiguousarray(sequences, dtype="float32")
+    hypothetical_contribs = np.ascontiguousarray(attributions, dtype="float32")
+    del sequences, attributions
+
     pos_patterns, neg_patterns = modiscolite.tfmodisco.TFMoDISco(
-        one_hot=sequences.astype("float32"),
-        hypothetical_contribs=attributions.astype("float32"),
+        one_hot=one_hot,
+        hypothetical_contribs=hypothetical_contribs,
         max_seqlets_per_metacluster=max_seqlets,
         sliding_window_size=sliding,
         flank_size=seqlet_flank_size,

@@ -165,6 +165,46 @@ def test_region_request_requires_six_channels():
         tfmodisco._prepare_inputs(sequence, attributions, region="cds")
 
 
+def test_track_set_sums_six_channel_features_and_rejects_masked_intervals():
+    features = np.zeros((2, 12, 6), dtype="float32")
+    features[:, :, :4] = np.stack([
+        _one_hot("ACGUACGUACGU"), _one_hot("UGCAUGCAUGCA")])
+    features[0, 2:5, 4] = 1
+    features[1, 7:10, 5] = 1
+    hyps = np.arange(2 * 12 * 4, dtype="float32").reshape(2, 12, 4)
+    mask = np.ones((2, 12), dtype=bool)
+    mask[0, 6] = False
+    tracks = core.TrackSet(features[:, :, :4], features[:, :, :4] * hyps,
+        hyps, position_mask=mask, sequence_features=features)
+
+    assert tracks.is_valid_interval(0, 1, 6)
+    assert not tracks.is_valid_interval(0, 1, 7)
+    with pytest.raises(ValueError, match="padding or an excluded"):
+        tracks.create_seqlets([core.Seqlet(0, 1, 7)])
+
+    seqlets = tracks.create_seqlets([
+        core.Seqlet(0, 1, 6), core.Seqlet(1, 3, 8)])
+    pattern = core.SeqletSet(seqlets, track_set=tracks)
+    assert pattern._sequence_features is None
+    np.testing.assert_array_equal(pattern.sequence_features,
+        (features[0, 1:6] + features[1, 3:8]) / 2)
+    assert pattern.sequence_features.shape == (5, 6)
+
+
+def test_masked_extraction_returns_only_fully_valid_seqlets():
+    rng = np.random.RandomState(3)
+    scores = rng.normal(size=(3, 30)).astype("float32")
+    mask = np.ones((3, 30), dtype=bool)
+    mask[0, :5] = False
+    mask[1, 13:17] = False
+    mask[2, 25:] = False
+    coords, _ = tfmodisco.extract_seqlets.extract_seqlets(
+        scores, window_size=5, flank=2, suppress=4, target_fdr=0.2,
+        min_passing_windows_frac=0.1, max_passing_windows_frac=0.4,
+        weak_threshold_for_counting_sign=0.8, position_mask=mask)
+    assert all(mask[s.example_idx, s.start:s.end].all() for s in coords)
+
+
 def test_cli_rejects_legacy_window_option(tmp_path):
     sequence_path = tmp_path / "seq.npy"
     attribution_path = tmp_path / "attr.npy"
