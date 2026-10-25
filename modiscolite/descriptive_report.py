@@ -8,7 +8,7 @@ import importlib.resources
 import base64
 import io
 
-from .report import compute_per_position_ic, _plot_weights, tomtomlite_dataframe, generate_tomtom_dataframe
+from .report import compute_per_position_ic, _plot_weights, _logo_ylim, tomtomlite_dataframe, generate_tomtom_dataframe
 from memelite.io import read_meme
 
 
@@ -25,7 +25,7 @@ def plot_to_base64(array, figsize=(10, 3), clamp=True):
     crp_logo = logomaker.Logo(df, ax=ax)
     crp_logo.style_spines(visible=False)
     if clamp:
-        plt.ylim(min(df.sum(axis=1).min(), 0), df.sum(axis=1).max())
+        ax.set_ylim(*_logo_ylim(df.to_numpy()))
 
     # Save to base64
     buffer = io.BytesIO()

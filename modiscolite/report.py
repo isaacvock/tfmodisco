@@ -213,6 +213,13 @@ def path_to_image_html(path):
 	return '<img src="'+ path + '" width="240" >'
 
 
+def _logo_ylim(array):
+	"""Return bounds containing both signed letter stacks and zero."""
+	lower = np.minimum(array, 0).sum(axis=1).min()
+	upper = np.maximum(array, 0).sum(axis=1).max()
+	return (lower, upper) if lower != upper else (-0.05, 0.05)
+
+
 def _plot_weights(array, path, figsize=(10,3), clamp=True):
 	"""Plot weights as a sequence logo and save to file."""
 	fig = plt.figure(figsize=figsize)
@@ -224,7 +231,7 @@ def _plot_weights(array, path, figsize=(10,3), clamp=True):
 	crp_logo = logomaker.Logo(df, ax=ax)
 	crp_logo.style_spines(visible=False)
 	if clamp:
-		plt.ylim(min(df.sum(axis=1).min(), 0), df.sum(axis=1).max())
+		ax.set_ylim(*_logo_ylim(df.to_numpy()))
 
 	plt.savefig(path)
 	plt.close()

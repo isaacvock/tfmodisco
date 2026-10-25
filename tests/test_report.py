@@ -307,8 +307,6 @@ def test_path_to_image_html(path):
 ##
 
 
-# A single position with a negative sum gives identical y-limits.
-@pytest.mark.filterwarnings("ignore:Attempting to set identical low and high")
 @pytest.mark.parametrize("length", [1, 10, 50])
 def test_plot_weights(tmp_path, length):
 	array = numpy.random.RandomState(length).randn(length, 4)
@@ -333,6 +331,46 @@ def test_plot_weights_clamp(tmp_path, clamp):
 	_plot_weights(numpy.abs(numpy.random.RandomState(0).randn(10, 4)),
 		filename, clamp=clamp)
 	assert filename.stat().st_size > 0
+
+
+@pytest.mark.parametrize("renderer", ["file", "base64"])
+@pytest.mark.parametrize("clamp", [True, False])
+@pytest.mark.parametrize("array, expected", [
+	([[-.01, -.08, 0, 0], [-.02, -.01, 0, 0]], (-.09, 0)),
+	([[.01, .08, 0, 0], [.02, .01, 0, 0]], (0, .09)),
+	([[.04, -.01, -.02, 0], [.02, -.01, 0, 0]], (-.03, .04)),
+	([[.03, -.03, 0, 0], [0, 0, -.02, .02]], (-.03, .03)),
+	([[-.01, -.08, 0, 0]], (-.09, 0)),
+	([[0, 0, 0, 0], [0, 0, 0, 0]], (-.05, .05)),
+], ids=["negative", "positive", "mixed", "cancelling", "single", "zero"])
+def test_logo_axis_limits(tmp_path, monkeypatch, renderer, clamp, array,
+	expected):
+	import logomaker
+	import matplotlib.pyplot as plt
+	from modiscolite.descriptive_report import plot_to_base64
+
+	array = numpy.array(array)
+	if not clamp:
+		fig, ax = plt.subplots()
+		logomaker.Logo(pandas.DataFrame(array, columns=list("ACGU")), ax=ax)
+		expected = ax.get_ylim()
+		plt.close(fig)
+
+	limits = []
+	savefig = plt.savefig
+
+	def capture_limits(*args, **kwargs):
+		limits.append(plt.gca().get_ylim())
+		return savefig(*args, **kwargs)
+
+	monkeypatch.setattr(plt, "savefig", capture_limits)
+	if renderer == "file":
+		_plot_weights(array, tmp_path / "logo.png", clamp=clamp)
+	else:
+		plot_to_base64(array, clamp=clamp)
+
+	assert len(limits) == 1
+	assert limits[0] == pytest.approx(expected)
 
 
 def test_plot_weights_closes_figure(tmp_path):
